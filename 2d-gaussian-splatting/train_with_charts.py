@@ -67,6 +67,9 @@ def training(
     
     save_log_images = False
     save_log_images_every_n_iter = 200
+
+    gaussian_points_count = []
+    gaussian_points_iterations = []
     
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -493,6 +496,11 @@ def training(
 
 
             if iteration % 10 == 0:
+
+                current_points = len(gaussians.get_xyz.detach())
+                gaussian_points_count.append(current_points)
+                gaussian_points_iterations.append(iteration)
+
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",
                     "distort": f"{ema_dist_for_log:.{5}f}",
@@ -613,6 +621,17 @@ def training(
                 except Exception as e:
                     # raise e
                     network_gui.conn = None
+
+    if len(gaussian_points_count) > 0:
+        plt.figure(figsize=(12, 6))
+        plt.plot(gaussian_points_iterations, gaussian_points_count)
+        plt.xlabel('Iterations')
+        plt.ylabel('Number of Gaussian Points')
+        plt.title('Gaussian Points Count During Training')
+        plt.grid(True)
+        plt.savefig(f"output/replica/scan1/free_gaussians/gaussian_points_count.png")
+        plt.close()
+    print("Training complete.")
 
 def prepare_output_and_logger(args):    
     if not args.model_path:

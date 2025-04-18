@@ -166,6 +166,34 @@ if __name__ == "__main__":
                     src_intrinsics[img_name] = K
                     src_extrinsics[img_name] = np.linalg.inv(cam2w)
                     src_scale_mats[img_name] = scale_mat
+
+            elif os.path.exists(f'{scene_path}/traj.txt'):
+                print("Loading calibrated poses from Replica traj.txt")
+                src_intrinsics = {}
+                src_extrinsics = {}
+                temp_img_path = os.path.join(scene_path, 'images', '000000_rgb.png')
+                temp_img = cv2.imread(temp_img_path)
+                height, width = temp_img.shape[:2]
+                print(f"Height: {height}, Width: {width}")
+                with open(f'{scene_path}/traj.txt', 'r') as f:
+                    lines = f.readlines()
+                for view_id in range(len(lines)):
+                    img_name = f'{view_id:06d}_rgb.png'
+
+                    # get camera to world matrix
+                    line = lines[view_id].split()
+                    c2w = np.array(list(map(float, line))).reshape(4, 4)
+                    src_extrinsics[img_name] = np.linalg.inv(c2w)
+
+                    # get intrinsics
+                    focal_length_x = 600.0
+                    focal_length_y = 600.0
+                    src_intrinsics[img_name] = np.array([
+                        [focal_length_x, 0., width/2],
+                        [0., focal_length_y, height/2],
+                        [0., 0., 1.]
+                    ])
+
             else:
                 raise FileNotFoundError(f'Calibration data ({scene_path}/sparse/0/) not found.')
 
@@ -385,7 +413,10 @@ if __name__ == "__main__":
         print_debug(extrinsics)
 
         # Modify images and intrinsics so that the principal points become the center of the images, before feeding them to MASt3R
-        os.makedirs(f'{output_dir}/images', exist_ok=True)
+        src_img_path = os.path.join(scene_path, 'images')
+        dst_img_path = os.path.join(output_dir, 'images')
+        shutil.copytree(src_img_path, dst_img_path)
+        # os.makedirs(f'{output_dir}/images', exist_ok=True)
         for idx_img, img_path in enumerate(filelist):
             img_fname = img_path.split('/')[-1]
             src_img = cv2.imread(img_path, 1)
@@ -449,7 +480,7 @@ if __name__ == "__main__":
             
             print_debug(f"Source image has shape: {src_img.shape}")
             print_debug(f"Final image has shape: {new_img.shape}")
-            cv2.imwrite(f'{output_dir}/images/{img_fname}', new_img)
+            # cv2.imwrite(f'{output_dir}/images/{img_fname}', new_img)
 
             intrinsics[idx_img] = tar_K
             filelist[idx_img] = f'{output_dir}/images/{img_fname}'
@@ -762,6 +793,56 @@ if __name__ == "__main__":
         write_cameras_text(cameras_colmap, f'{output_dir}/sparse/0/cameras.txt')
         write_images_text(images_colmap, f'{output_dir}/sparse/0/images.txt')
         write_points3D_text(points3d_colmap, f'{output_dir}/sparse/0/points3D.txt')
+
+    if use_calibrated_poses:
+        # save eval cameras
+        save_all_cameras_path = f'{output_dir}/all-sparse/0'
+        os.makedirs(save_all_cameras_path, exist_ok=True)
+        train_image_names_set = set(image_names)
+
+        all_cameras_colmap = {}
+        all_images_colmap = {}
+
+        for idx_img, img_name in enumerate(all_image_names):
+            camera_id = idx_img + 1
+            img_path = os.path.join(image_dir, img_name)
+
+            img_original = cv2.imread(img_path, 0)
+            height_original, width_original = img_original.shape[:2]
+
+            K = src_intrinsics[img_name]
+            w2c = src_extrinsics[img_name]
+
+            # camera intrinsics
+            all_cameras_colmap[camera_id] = Camera(
+                int(camera_id), 
+                'PINHOLE', 
+                width=width_original, 
+                height=height_original, 
+                params=np.array([
+                    K[0, 0],  # fx
+                    K[1, 1],  # fy
+                    K[0, 2],  # cx
+                    K[1, 2],  # cy
+                ])
+            )
+
+            # camera extrinsics
+            all_images_colmap[camera_id] = Image(
+                camera_id,  # id
+                rotmat2qvec(w2c[:3, :3]).astype(np.float64),  # qvec
+                w2c[:3, 3].astype(np.float64),  # tvec
+                camera_id,  # camera_model_id
+                img_name,  # name
+                np.array([], dtype=np.float64),  # xys
+                np.array([], dtype=np.int64)  # point3D_ids
+            )
+
+        write_cameras_binary(all_cameras_colmap, f'{save_all_cameras_path}/cameras.bin')
+        write_images_binary(all_images_colmap, f'{save_all_cameras_path}/images.bin')
+
+        write_cameras_text(all_cameras_colmap, f'{save_all_cameras_path}/cameras.txt')
+        write_images_text(all_images_colmap, f'{save_all_cameras_path}/images.txt')
 
     # save 
     pcd = o3d.geometry.PointCloud()

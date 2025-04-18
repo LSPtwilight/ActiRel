@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 if __name__ == '__main__':
@@ -13,6 +14,8 @@ if __name__ == '__main__':
     # Image selection parameters
     parser.add_argument('--n_images', type=int, default=None, 
         help='Number of images to use for optimization, sampled with constant spacing. If not provided, all images will be used.')
+    parser.add_argument('--use_view_config', action='store_true', 
+        help='Use view config file to select images for optimization. If provided, this will override the --n_images and --image_idx arguments.')
     parser.add_argument('--image_idx', type=int, nargs='*', default=None, 
         help='View indices to use for optimization (zero-based indexing). If provided, this will override the --n_images.')
     parser.add_argument('--randomize_images', action='store_true', 
@@ -57,7 +60,7 @@ if __name__ == '__main__':
     parser.add_argument('--alignment_only', action='store_true', help='Only run the chart alignment step')
     parser.add_argument('--refinement_only', action='store_true', help='Only run the chart refinement step')
     parser.add_argument('--mesh_only', action='store_true', help='Only run the mesh extraction step')
-    
+    parser.add_argument('--render_only', action='store_true', help='Only run the render all img step')
     args = parser.parse_args()
     
     # Set output paths
@@ -72,7 +75,7 @@ if __name__ == '__main__':
     free_gaussians_path = os.path.join(args.output_path, 'free_gaussians')
     tsdf_meshes_path = os.path.join(args.output_path, 'tsdf_meshes')
     tetra_meshes_path = os.path.join(args.output_path, 'tetra_meshes')
-    
+    all_img_path = os.path.join(args.output_path, 'all_rendering')
     # Dense supervision (Optional)
     if args.dense_supervision:
         dense_arg = " ".join([
@@ -87,6 +90,16 @@ if __name__ == '__main__':
     # Free Gaussians refinement default config
     if args.free_gaussians_config is None:
         args.free_gaussians_config = 'long' if args.dense_supervision else 'default'
+
+    if args.use_view_config:
+        view_config_path = os.path.join(args.source_path, 'split-10views.json')
+        with open(view_config_path, 'r') as f:
+            view_config = json.load(f)
+        n_images = None
+        image_idx_list = view_config['train']
+    else:
+        n_images = args.n_images
+        image_idx_list = args.image_idx
     
     # Defining commands
     sfm_command = " ".join([
@@ -95,8 +108,8 @@ if __name__ == '__main__':
         "--output_path", mast3r_scene_path,
         "--config", args.sfm_config,
         # "--env", args.sfm_env,
-        "--n_images" if args.n_images is not None else "", str(args.n_images) if args.n_images is not None else "",
-        "--image_idx" if args.image_idx is not None else "", " ".join([str(i) for i in args.image_idx]) if args.image_idx is not None else "",
+        "--n_images" if n_images is not None else "", str(n_images) if n_images is not None else "",
+        "--image_idx" if image_idx_list is not None else "", " ".join([str(i) for i in image_idx_list]) if image_idx_list is not None else "",
         "--randomize_images" if args.randomize_images else "",
     ])
     
@@ -118,6 +131,13 @@ if __name__ == '__main__':
         "--config", args.free_gaussians_config,
         dense_arg,
         "--dense_regul", args.dense_regul,
+    ])
+
+    render_all_img_command = " ".join([
+        "python", "scripts/render_allimg.py",
+        "--mast3r_scene", mast3r_scene_path,
+        "--model_path", free_gaussians_path,
+        "--output_path", all_img_path,
     ])
     
     tsdf_command = " ".join([
@@ -145,13 +165,16 @@ if __name__ == '__main__':
         and (not args.alignment_only) 
         and (not args.refinement_only) 
         and (not args.mesh_only)
-    )    
+        and (not args.render_only)
+    )
     if args.sfm_only or run_all:
         os.system(sfm_command)
     if args.alignment_only or run_all:
         os.system(align_charts_command)
     if args.refinement_only or run_all:
         os.system(refine_free_gaussians_command)
+    if args.render_only or run_all:
+        os.system(render_all_img_command)
     if args.mesh_only or run_all:
         if args.use_multires_tsdf:
             os.system(tsdf_command)
