@@ -8,8 +8,8 @@
 Please follow the instructions below to install the dependencies manually:
 
 ```shell
-conda create --name matcha -y python=3.9
-conda activate matcha
+conda create --name priorgs -y python=3.9
+conda activate priorgs
 # Choose the right CUDA version for your system
 conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia
 conda install -c fvcore -c iopath -c conda-forge fvcore iopath
