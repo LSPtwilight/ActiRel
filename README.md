@@ -23,6 +23,13 @@ conda install -c conda-forge ipywidgets
 conda install cmake
 conda install conda-forge::gmp
 conda install conda-forge::cgal
+
+pip install ~/src/torch/torch-2.0.1+cu118-cp39-cp39-linux_x86_64.whl
+pip install ~/src/torchvision/torchvision-0.15.2+cu118-cp39-cp39-linux_x86_64.whl
+cp ~/src/pytorch3d/pytorch3d.zip ./ && unzip pytorch3d.zip
+cd pytorch3d && pip install -e .
+cd PromptDA && pip install -e .
+
 pip install roma==1.5.0
 pip install open3d==0.18.0
 pip install opencv-python==4.11.0.86
@@ -37,8 +44,16 @@ pip install cython==3.0.12
 pip install faiss-gpu-cu11
 pip install tqdm==4.67.1
 pip install matplotlib==3.9.4
-pip install huggingface-hub[torch]
+pip install huggingface-hub==0.22.2
 pip install gradio
+pip install kiui
+pip install mediapy
+pip install diffusers==0.19.3
+pip install accelerate
+pip install transformers==4.28.1
+pip install xformers==0.0.20
+pip install pytransform3d
+pip install imageio
 ```
 
 Then, install the 2D Gaussian splatting and adaptive tetrahedralization dependencies:

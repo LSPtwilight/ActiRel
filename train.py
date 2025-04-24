@@ -158,25 +158,34 @@ if __name__ == '__main__':
         "--interpolate_views" if not args.no_interpolated_views else "",
         dense_arg,
     ])
+
+    see3d_render_command = " ".join([
+        "python", "2d-gaussian-splatting/train_scene_gaussian_see3d.py",
+        "--model_path", free_gaussians_path,
+        "--iteration", '7000',
+        "--render_type", "gs",
+    ])
     
-    # Running commands
-    run_all = (
-        (not args.sfm_only) 
-        and (not args.alignment_only) 
-        and (not args.refinement_only) 
-        and (not args.mesh_only)
-        and (not args.render_only)
-    )
-    if args.sfm_only or run_all:
-        os.system(sfm_command)
-    if args.alignment_only or run_all:
-        os.system(align_charts_command)
-    if args.refinement_only or run_all:
-        os.system(refine_free_gaussians_command)
-    if args.render_only or run_all:
-        os.system(render_all_img_command)
-    if args.mesh_only or run_all:
-        if args.use_multires_tsdf:
-            os.system(tsdf_command)
-        else:
-            os.system(tetra_command)
+    # # Running commands
+    # run_all = (
+    #     (not args.sfm_only) 
+    #     and (not args.alignment_only) 
+    #     and (not args.refinement_only) 
+    #     and (not args.mesh_only)
+    #     and (not args.render_only)
+    # )
+    # if args.sfm_only or run_all:
+    #     os.system(sfm_command)
+    # if args.alignment_only or run_all:
+    #     os.system(align_charts_command)
+    # if args.refinement_only or run_all:
+    #     os.system(refine_free_gaussians_command)
+    # if args.render_only or run_all:
+    #     os.system(render_all_img_command)
+    # if args.mesh_only or run_all:
+    #     if args.use_multires_tsdf:
+    #         os.system(tsdf_command)
+    #     else:
+    #         os.system(tetra_command)
+
+    os.system(see3d_render_command)

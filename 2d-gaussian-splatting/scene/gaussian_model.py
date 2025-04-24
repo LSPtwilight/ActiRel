@@ -93,6 +93,64 @@ class GaussianModel:
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
+    def freeze_params(self):
+        """
+        Freeze all parameters of the GaussianModel to prevent gradient updates
+        
+        This is useful for hierarchical model training or transfer learning scenarios,
+        such as when you want to add new points based on an existing model without 
+        changing the original points.
+        
+        The freezing operation affects the following parameters:
+        - Positions (_xyz)
+        - Features (_features_dc, _features_rest)
+        - Scaling (_scaling)
+        - Rotation (_rotation)
+        - Opacity (_opacity)
+        
+        Note: This operation modifies the original parameters to no longer require gradients
+        """
+        # Record the original parameter count
+        original_point_count = self._xyz.shape[0]
+        print(f"Freezing {original_point_count} points in GaussianModel")
+        
+        # Freeze each parameter
+        self._xyz.requires_grad_(False)
+        self._features_dc.requires_grad_(False)
+        self._features_rest.requires_grad_(False)
+        self._scaling.requires_grad_(False)
+        self._rotation.requires_grad_(False)
+        self._opacity.requires_grad_(False)
+        
+        # If optimizer is already set, update the parameters in the optimizer
+        if self.optimizer is not None:
+            # Replace parameters with frozen versions
+            updated_param_groups = []
+            for group in self.optimizer.param_groups:
+                if group["name"] == "xyz":
+                    group["params"] = [self._xyz]
+                elif group["name"] == "f_dc":
+                    group["params"] = [self._features_dc]
+                elif group["name"] == "f_rest":
+                    group["params"] = [self._features_rest]
+                elif group["name"] == "opacity":
+                    group["params"] = [self._opacity]
+                elif group["name"] == "scaling":
+                    group["params"] = [self._scaling]
+                elif group["name"] == "rotation":
+                    group["params"] = [self._rotation]
+                
+                # Set learning rate to 0 to ensure no updates
+                group["lr"] = 0.0
+                updated_param_groups.append(group)
+            
+            # Recreate the optimizer with updated parameter groups while retaining state
+            self.optimizer = torch.optim.Adam(
+                updated_param_groups,
+                lr=0.0,
+                eps=1e-15
+            )
+
     @property
     def get_scaling(self):
         scales = self.scaling_activation(self._scaling)
@@ -588,3 +646,85 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+
+def combine_gslist(gslist):
+    """
+    Combine a list of GaussianModel objects into a single GaussianModel object.
+    
+    Args:
+        gslist: List of GaussianModel objects to combine
+        
+    Returns:
+        A new GaussianModel instance containing all parameters from the input models
+    """
+    # Initialize a new GaussianModel object with the same SH degree as the first model in the list
+    combined_model = GaussianModel(gslist[0].max_sh_degree)
+    
+    # Prepare lists to hold parameters from all models
+    xyz_list = []
+    features_dc_list = []
+    features_rest_list = []
+    opacity_list = []
+    scaling_list = []
+    rotation_list = []
+    mip_filter_list = []
+    # Collect parameters from each model
+    for model in gslist:
+        xyz_list.append(model.get_xyz.detach())
+        features_dc_list.append(model._features_dc.detach())
+        features_rest_list.append(model._features_rest.detach())
+        opacity_list.append(model._opacity.detach())
+        scaling_list.append(model._scaling.detach())
+        rotation_list.append(model._rotation.detach())
+
+        if hasattr(model, "mip_filter"):
+            mip_filter_list.append(model.mip_filter.detach())
+    
+    # Concatenate all parameters
+    combined_model._xyz = nn.Parameter(torch.cat(xyz_list, dim=0))
+    combined_model._features_dc = nn.Parameter(torch.cat(features_dc_list, dim=0))
+    combined_model._features_rest = nn.Parameter(torch.cat(features_rest_list, dim=0))
+    combined_model._opacity = nn.Parameter(torch.cat(opacity_list, dim=0))
+    combined_model._scaling = nn.Parameter(torch.cat(scaling_list, dim=0))
+    combined_model._rotation = nn.Parameter(torch.cat(rotation_list, dim=0))
+
+    if len(mip_filter_list) > 0:
+        combined_model.set_mip_filter(True)
+        combined_model.mip_filter = nn.Parameter(torch.cat(mip_filter_list, dim=0))
+    assert combined_model.mip_filter.shape[0] == combined_model._xyz.shape[0]
+    
+    # Also initialize/combine other necessary properties
+    combined_model.active_sh_degree = gslist[0].active_sh_degree
+    
+    # Initialize max_radii2D with the right size
+    n_points = combined_model._xyz.shape[0]
+    combined_model.max_radii2D = torch.zeros(n_points, device=combined_model._xyz.device)
+    
+    # Initialize other buffers with the appropriate sizes
+    combined_model.xyz_gradient_accum = torch.zeros((n_points, 1), device=combined_model._xyz.device)
+    combined_model.denom = torch.zeros((n_points, 1), device=combined_model._xyz.device)
+
+    # NOTE: hard code pseudo optimizer
+    l = [
+        {'params': [combined_model._xyz], 'lr': 0.001, "name": "xyz"},
+        {'params': [combined_model._features_dc], 'lr': 0.001, "name": "f_dc"},
+        {'params': [combined_model._features_rest], 'lr': 0.001 / 20.0, "name": "f_rest"},
+        {'params': [combined_model._opacity], 'lr': 0.001, "name": "opacity"},
+        {'params': [combined_model._scaling], 'lr': 0.001, "name": "scaling"},
+        {'params': [combined_model._rotation], 'lr': 0.001, "name": "rotation"}
+    ]
+    combined_model.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+    
+    # Copy spatial_lr_scale from the first model
+    combined_model.spatial_lr_scale = gslist[0].spatial_lr_scale
+    
+    # Set percent_dense to the same as the first model
+    combined_model.percent_dense = gslist[0].percent_dense
+    
+    # Print information about the combined model
+    print(f"Combined {len(gslist)} models with a total of {n_points} points")
+    for i, model in enumerate(gslist):
+        print(f"  Model {i}: {model.get_xyz.shape[0]} points")
+    
+    return combined_model
