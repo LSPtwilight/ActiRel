@@ -160,25 +160,24 @@ def save_model(scene_gs_list, iteration, output_path):
     print(f"{iteration} saved")
 
 def train_hierarchical_gaussians():
-    # Set paths
-    training_root_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/data/replica/scan6/images'
-    see3d_root_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/output/replica/scan6/free_gaussians/see3d_render'
-    raw_gs_root_path = os.path.join(see3d_root_path, 'raw-gs')
-    inpaint_root_path = os.path.join(see3d_root_path, 'inpainted_images-gs-resize')
-    pcd_root_path = os.path.join(see3d_root_path, 'aligned-pcds')
-    output_path = os.path.join(see3d_root_path, 'trained_hier_model')
-    os.makedirs(output_path, exist_ok=True)
-    os.makedirs(pcd_root_path, exist_ok=True)
 
     # Load training views
     parser = ArgumentParser(description="Training script parameters")
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
     opt = OptimizationParams(parser)
+    parser.add_argument("--warp_root_path", type=str, required=True)
+    parser.add_argument("--inpaint_root_path", type=str, required=True)
+    parser.add_argument("--output_root_path", type=str, required=True)
     parser.add_argument("--train_iterations", type=int, default=7_000)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 3_000, 7_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[1000, 3_000, 7_000])
     args = get_combined_args(parser)
+
+    raw_gs_root_path = args.warp_root_path
+    inpaint_root_path = args.inpaint_root_path
+    output_path = args.output_root_path
+    os.makedirs(output_path, exist_ok=True)
     
     # Extract parameters
     dataset, pipe = model.extract(args), pipeline.extract(args)
@@ -205,7 +204,7 @@ def train_hierarchical_gaussians():
         image_width = int(see3d_cameras[f'image_width_{i:06d}'])
         image_height = int(see3d_cameras[f'image_height_{i:06d}'])
 
-        inpainted_image_path = os.path.join(inpaint_root_path, f"inpaint_{i:06d}.png")
+        inpainted_image_path = os.path.join(inpaint_root_path, f"predict_warp_frame{i:06d}.png")
         inpainted_image = cv2.imread(inpainted_image_path)
         inpainted_image = cv2.cvtColor(inpainted_image, cv2.COLOR_BGR2RGB) / 255.0
         inpainted_image = torch.from_numpy(inpainted_image).float().to("cuda").permute(2, 0, 1)
@@ -239,11 +238,8 @@ def train_hierarchical_gaussians():
     print('See3D pointmap loaded!')
 
     # Choose specific views for initialization
-    choose_view_list = [0, 4, 32, 37, 40, 43, 45, 46, 47, 48]
-    choose_none_visible_pcds = [none_visible_pcds[i] for i in choose_view_list]
-    choose_none_visible_pcd_colors = [none_visible_pcd_colors[i] for i in choose_view_list]
-    choose_pcds = torch.cat(choose_none_visible_pcds, dim=0).cpu().numpy()
-    choose_pcd_colors = torch.cat(choose_none_visible_pcd_colors, dim=0).cpu().numpy() / 255.0
+    choose_pcds = torch.cat(none_visible_pcds, dim=0).cpu().numpy()
+    choose_pcd_colors = torch.cat(none_visible_pcd_colors, dim=0).cpu().numpy() / 255.0
 
     # Initialize new Gaussians
     choose_init_pcd = BasicPointCloud(points=choose_pcds, colors=choose_pcd_colors, normals=None)

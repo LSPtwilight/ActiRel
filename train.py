@@ -16,6 +16,8 @@ if __name__ == '__main__':
         help='Number of images to use for optimization, sampled with constant spacing. If not provided, all images will be used.')
     parser.add_argument('--use_view_config', action='store_true', 
         help='Use view config file to select images for optimization. If provided, this will override the --n_images and --image_idx arguments.')
+    parser.add_argument('--config_view_num', type=int, default=10, 
+        help='View number of the config file. If provided, this will override the --n_images.')
     parser.add_argument('--image_idx', type=int, nargs='*', default=None, 
         help='View indices to use for optimization (zero-based indexing). If provided, this will override the --n_images.')
     parser.add_argument('--randomize_images', action='store_true', 
@@ -92,7 +94,7 @@ if __name__ == '__main__':
         args.free_gaussians_config = 'long' if args.dense_supervision else 'default'
 
     if args.use_view_config:
-        view_config_path = os.path.join(args.source_path, 'split-10views.json')
+        view_config_path = os.path.join(args.source_path, f'split-{args.config_view_num}views.json')
         with open(view_config_path, 'r') as f:
             view_config = json.load(f)
         n_images = None
@@ -160,7 +162,20 @@ if __name__ == '__main__':
     ])
 
     see3d_render_command = " ".join([
-        "python", "2d-gaussian-splatting/train_scene_gaussian_see3d.py",
+        "python", "2d-gaussian-splatting/render_novel_views.py",
+        "--model_path", free_gaussians_path,
+        "--iteration", '7000',
+        "--data_path", args.source_path,
+    ])
+
+    charts_render_command = " ".join([
+        "python", "2d-gaussian-splatting/test_chart_pcd_project.py",
+        "--model_path", free_gaussians_path,
+        "--iteration", '7000',
+    ])
+
+    traj_render_command = " ".join([
+        "python", "2d-gaussian-splatting/test_traj_render.py",
         "--model_path", free_gaussians_path,
         "--iteration", '7000',
         "--render_type", "gs",
@@ -189,3 +204,5 @@ if __name__ == '__main__':
     #         os.system(tetra_command)
 
     os.system(see3d_render_command)
+    # os.system(charts_render_command)
+    # os.system(traj_render_command)

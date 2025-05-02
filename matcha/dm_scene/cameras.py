@@ -574,7 +574,7 @@ def convert_camera_from_gs_to_pytorch3d(gs_cameras, device='cuda'):
     w2c[:, 3, 3] = 1
     
     c2w = w2c.inverse()
-    c2w[:, :3, 1:3] *= -1
+    c2w[:, :3, 1:3] *= -1               # convert from colmap coords to opengl coords
     c2w = c2w[:, :3, :]
     
     distortion_params = torch.zeros(N, 6).to(device)
@@ -625,7 +625,7 @@ def convert_camera_from_gs_to_pytorch3d(gs_cameras, device='cuda'):
     cam2world = torch.cat([c2w, line], dim=1)
     world2cam = cam2world.inverse()
     R, T = world2cam.split([3, 1], dim=-1)
-    R = R[:, :3].transpose(1, 2) * torch.Tensor([-1.0, 1.0, -1]).to(device)
+    R = R[:, :3].transpose(1, 2) * torch.Tensor([-1.0, 1.0, -1]).to(device)             # for pytorch3d
     T = T.squeeze(2)[:, :3] * torch.Tensor([-1.0, 1.0, -1]).to(device)
 
     p3d_cameras = P3DCameras(device=device, R=R, T=T, K=K, znear=0.0001)

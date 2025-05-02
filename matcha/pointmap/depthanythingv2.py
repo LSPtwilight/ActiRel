@@ -316,7 +316,7 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
         print(f"Processing frame {cam_idx}...")
 
         # Image path
-        image_name = f'inpaint_{cam_idx:06d}.png'
+        image_name = f'predict_warp_frame{cam_idx:06d}.png'
         img_path_i = os.path.join(
             inpaint_images_dir, 
             image_name 
