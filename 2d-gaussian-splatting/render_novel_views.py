@@ -27,9 +27,10 @@ if __name__ == "__main__":
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
     parser.add_argument("--data_path", required=True, type=str)
-    parser.add_argument("--iteration", default=7000, type=int)
-    parser.add_argument("--train_view_num", default=5, type=int)
+    parser.add_argument("--iteration", required=True, type=str)
+    parser.add_argument("--train_view_num", required=True, type=str)
     parser.add_argument("--output_root_path", required=True, type=str)
+    parser.add_argument("--select_inpaint_num", required=True, type=str)
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
     model_name=os.path.basename(args.model_path)
@@ -55,6 +56,12 @@ if __name__ == "__main__":
 
     novel_views_save_root_path = os.path.join(args.model_path, 'see3d_render')
     os.makedirs(novel_views_save_root_path, exist_ok=True)
+
+    # copy reference images
+    ref_views_save_root_path = os.path.join(args.model_path, 'see3d_render', 'ref-views')
+    os.makedirs(ref_views_save_root_path, exist_ok=True)
+    for ref_view_id in train_id_list:
+        shutil.copy(os.path.join(args.data_path, 'images', f'{ref_view_id:06d}_rgb.png'), os.path.join(ref_views_save_root_path, f'{ref_view_id:06d}_rgb.png'))
 
     # render train views
     train_save_root_path = os.path.join(novel_views_save_root_path, 'render-train-views')
@@ -129,7 +136,7 @@ if __name__ == "__main__":
 
         print(f'Novel view {idx} save done!')
 
-    need_inpaint_views = select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians)
+    need_inpaint_views = select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, int(args.select_inpaint_num))
     print(f'Need inpaint views: {need_inpaint_views}')
 
     select_gs_output_dir = args.output_root_path

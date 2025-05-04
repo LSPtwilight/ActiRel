@@ -371,7 +371,7 @@ def marching_tetrahedra_with_binary_search(
             mesh.update_vertices(mask)
             mesh.update_faces(face_mask)
         
-        mesh.export(os.path.join(render_path, f"tetra_mesh_binary_search_{step}.ply"))
+        mesh.export(os.path.join(render_path, f"tetra_mesh_binary_search_{step}_iter_{iteration}.ply"))
 
     # linear interpolation
     # right_sdf *= -1

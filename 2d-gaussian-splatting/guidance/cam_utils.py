@@ -480,7 +480,7 @@ def generate_see3d_camera(input_c2ws, interpolate_num=10, camera_type='ellipse',
 
     return random_poses, cur_cams
 
-def generate_see3d_camera_by_lookat(train_cams, train_depths, train_view_points, traj_center=None, n_frames=50, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_see3d_camera_by_lookat(train_cams, train_depths, train_view_points, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
 
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
         """Construct lookat view matrix."""

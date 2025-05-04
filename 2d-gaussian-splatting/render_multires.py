@@ -47,6 +47,7 @@ if __name__ == "__main__":
     parser.add_argument("--mesh_res", default=1024, type=int, help='Mesh: resolution for unbounded mesh extraction')
     parser.add_argument("--multires_factors", default=[2,8,16], nargs='+', type=int, help='Mesh: multiresolution factors')
     parser.add_argument("--output_dir", type=str, default=None, help='Path to save the output mesh.')
+    parser.add_argument("--use_default_output_dir", action="store_true")
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
     
-    if args.output_dir is None:
+    if args.use_default_output_dir:
         train_dir = os.path.join(args.model_path, 'train', "ours_{}".format(scene.loaded_iter))
     else:
         train_dir = args.output_dir

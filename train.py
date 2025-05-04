@@ -3,6 +3,7 @@ import sys
 import argparse
 import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import time
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -63,6 +64,8 @@ if __name__ == '__main__':
     parser.add_argument('--refinement_only', action='store_true', help='Only run the chart refinement step')
     parser.add_argument('--mesh_only', action='store_true', help='Only run the mesh extraction step')
     parser.add_argument('--render_only', action='store_true', help='Only run the render all img step')
+
+    parser.add_argument('--select_inpaint_num', type=int, default=20, help='Number of views to select for inpainting.')
     args = parser.parse_args()
     
     # Set output paths
@@ -77,7 +80,11 @@ if __name__ == '__main__':
     free_gaussians_path = os.path.join(args.output_path, 'free_gaussians')
     tsdf_meshes_path = os.path.join(args.output_path, 'tsdf_meshes')
     tetra_meshes_path = os.path.join(args.output_path, 'tetra_meshes')
-    all_img_path = os.path.join(args.output_path, 'all_rendering')
+    warp_root_dir = os.path.join(free_gaussians_path, 'see3d_render', 'select-gs')
+    ref_views_save_root_path = os.path.join(free_gaussians_path, 'see3d_render', 'ref-views')
+    inpaint_root_dir = os.path.join(free_gaussians_path, 'see3d_render', 'select-gs-inpainted')
+    continue_train_root_dir = os.path.join(free_gaussians_path, 'gs-continue-training')
+
     # Dense supervision (Optional)
     if args.dense_supervision:
         dense_arg = " ".join([
@@ -136,10 +143,13 @@ if __name__ == '__main__':
     ])
 
     render_all_img_command = " ".join([
-        "python", "scripts/render_allimg.py",
-        "--mast3r_scene", mast3r_scene_path,
+        "python", "2d-gaussian-splatting/render_multires.py",
+        "--source_path", mast3r_scene_path,
         "--model_path", free_gaussians_path,
-        "--output_path", all_img_path,
+        "--skip_test",
+        "--skip_mesh",
+        "--render_all_img",
+        "--use_default_output_dir",
     ])
     
     tsdf_command = " ".join([
@@ -165,44 +175,61 @@ if __name__ == '__main__':
         "python", "2d-gaussian-splatting/render_novel_views.py",
         "--model_path", free_gaussians_path,
         "--iteration", '7000',
+        "--train_view_num", str(args.config_view_num),
         "--data_path", args.source_path,
+        "--output_root_path", warp_root_dir,
+        "--select_inpaint_num", str(args.select_inpaint_num),
     ])
 
-    charts_render_command = " ".join([
-        "python", "2d-gaussian-splatting/test_chart_pcd_project.py",
-        "--model_path", free_gaussians_path,
-        "--iteration", '7000',
+    see3d_inpaint_command = " ".join([
+        "python", "2d-gaussian-splatting/guidance/see3d_util.py",
+        "--source_imgs_dir", ref_views_save_root_path,
+        "--warp_root_dir", warp_root_dir,
+        "--output_root_dir", inpaint_root_dir,
     ])
 
-    traj_render_command = " ".join([
-        "python", "2d-gaussian-splatting/test_traj_render.py",
-        "--model_path", free_gaussians_path,
-        "--iteration", '7000',
-        "--render_type", "gs",
+    continue_train_command = " ".join([
+        "python", "2d-gaussian-splatting/train_gaussian_continue.py",
+        "-s", mast3r_scene_path,
+        "-m", free_gaussians_path,
+        "--warp_root_path", warp_root_dir,
+        "--inpaint_root_path", inpaint_root_dir,
+        "--output_root_path", continue_train_root_dir,
+        "--load_iteration", '7000',
+        "--train_iterations", '7000',
     ])
+
+    eval_command = " ".join([
+        "python", "2d-gaussian-splatting/eval/eval.py",
+        "--source_path", args.source_path,
+        "--model_path", args.output_path,
+        "--sparse_view_num", str(args.config_view_num),
+    ])
+
+    t1 = time.time()
     
-    # # Running commands
-    # run_all = (
-    #     (not args.sfm_only) 
-    #     and (not args.alignment_only) 
-    #     and (not args.refinement_only) 
-    #     and (not args.mesh_only)
-    #     and (not args.render_only)
-    # )
-    # if args.sfm_only or run_all:
-    #     os.system(sfm_command)
-    # if args.alignment_only or run_all:
-    #     os.system(align_charts_command)
-    # if args.refinement_only or run_all:
-    #     os.system(refine_free_gaussians_command)
-    # if args.render_only or run_all:
-    #     os.system(render_all_img_command)
-    # if args.mesh_only or run_all:
-    #     if args.use_multires_tsdf:
-    #         os.system(tsdf_command)
-    #     else:
-    #         os.system(tetra_command)
+    # run MAtCha training
+    os.system(sfm_command)
+    os.system(align_charts_command)
+    os.system(refine_free_gaussians_command)
 
+    # render all images, export mesh, and evaluate
+    os.system(render_all_img_command)
+    os.system(tetra_command)
+    os.system(eval_command)
+
+    # see3d inpainting
     os.system(see3d_render_command)
-    # os.system(charts_render_command)
-    # os.system(traj_render_command)
+    os.system(see3d_inpaint_command)
+
+    # continue training
+    os.system(continue_train_command)
+
+    # render all images, export mesh, and evaluate
+    os.system(render_all_img_command)
+    os.system(tetra_command)
+    os.system(eval_command)
+
+
+    t2 = time.time()
+    print(f"Total running time: {t2 - t1} seconds")

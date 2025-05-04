@@ -281,6 +281,7 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
     see3d_pointmap_cameras:CamerasWrapper,
     inpaint_images_dir:str,
     visible_mask_dir:str,
+    visible_threshold:float=0.99,
     # DepthAnything
     depthanything_checkpoint_dir:str='./Depth-Anything-V2/checkpoints/',
     depthanything_encoder:str='vitl',  # or 'vits', 'vitb', 'vitg'
@@ -311,6 +312,7 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
     if return_none_visible_pcds:
         none_visible_pcds = []
         none_visible_pcd_colors = []
+        reference_depths = []
 
     for cam_idx in image_indices:
         print(f"Processing frame {cam_idx}...")
@@ -323,15 +325,16 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
         )
 
         # Image
-        image_i = np.array(Image.open(img_path_i))
+        image_i = np.array(Image.open(img_path_i)) / 255.0          # [H, W, 3], range [0, 1]
+        _height, _width = image_i.shape[:2]
         image_i = torch.from_numpy(image_i).to(device)
 
         # Original image
         original_image_i = image_i.clone()
         
         # Focal    
-        fx = fov2focal(see3d_pointmap_cameras.gs_cameras[cam_idx].FoVx, image_i.shape[1])
-        fy = fov2focal(see3d_pointmap_cameras.gs_cameras[cam_idx].FoVy, image_i.shape[0])
+        fx = fov2focal(see3d_pointmap_cameras.gs_cameras[cam_idx].FoVx, _width)
+        fy = fov2focal(see3d_pointmap_cameras.gs_cameras[cam_idx].FoVy, _height)
         focal_i = torch.tensor([fx, fy], device=device)
         
         # Pose
@@ -347,9 +350,13 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
         
         render_depth_path = os.path.join(visible_mask_dir, f'depth_frame{cam_idx:06d}.tiff')
         render_depth = torch.from_numpy(np.array(Image.open(render_depth_path))).to(device)
-        visible_mask_path = os.path.join(visible_mask_dir, f'mask_frame{cam_idx:06d}.png')
-        visible_mask = torch.from_numpy(np.array(Image.open(visible_mask_path))).to(device)
-        visible_mask = visible_mask > 0
+        # visible_mask_path = os.path.join(visible_mask_dir, f'mask_frame{cam_idx:06d}.png')
+        # visible_mask = torch.from_numpy(np.array(Image.open(visible_mask_path))).to(device)
+        # visible_mask = visible_mask > 0
+
+        alpha_map_path = os.path.join(visible_mask_dir, f'alpha_{cam_idx:06d}.npy')
+        alpha_map = torch.from_numpy(np.load(alpha_map_path)).to(device)
+        visible_mask = alpha_map > visible_threshold
 
         depth = depth_linear_align(disp=inv_depth, render_depth=render_depth, visible_mask=visible_mask)
         points3d_i = see3d_pointmap_cameras.backproject_depth(cam_idx=cam_idx, depth=depth)
@@ -359,6 +366,9 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
             pcd_colors = image_i.reshape(-1, 3)
             none_visible_pcds.append(points3d_i[~pcd_visible_mask])
             none_visible_pcd_colors.append(pcd_colors[~pcd_visible_mask])
+            reference_depths.append(depth)
+
+        points3d_i = points3d_i.view(_height, _width, 3)
 
         # Confidence
         confidence_i = torch.ones_like(points3d_i[..., 2]) * 1e8
@@ -391,7 +401,7 @@ def get_pointmap_from_see3d_inpainting_with_depthanything(
     )
 
     if return_none_visible_pcds:
-        return pointmap, none_visible_pcds, none_visible_pcd_colors
+        return pointmap, reference_depths, none_visible_pcds, none_visible_pcd_colors
     else:
         return pointmap
 

@@ -728,3 +728,51 @@ def combine_gslist(gslist):
         print(f"  Model {i}: {model.get_xyz.shape[0]} points")
     
     return combined_model
+
+def combine_gslist_simple(gslist):
+    """
+    Combine a list of GaussianModel objects into a single GaussianModel object.
+    
+    Args:
+        gslist: List of GaussianModel objects to combine
+        
+    Returns:
+        A new GaussianModel instance containing all parameters from the input models
+    """
+    # Initialize a new GaussianModel object with the same SH degree as the first model in the list
+    combined_model = GaussianModel(gslist[0].max_sh_degree)
+    
+    # Prepare lists to hold parameters from all models
+    xyz_list = []
+    features_dc_list = []
+    features_rest_list = []
+    opacity_list = []
+    scaling_list = []
+    rotation_list = []
+
+    # Collect parameters from each model
+    for model in gslist:
+        xyz_list.append(model.get_xyz.detach())
+        features_dc_list.append(model._features_dc.detach())
+        features_rest_list.append(model._features_rest.detach())
+        opacity_list.append(model._opacity.detach())
+        scaling_list.append(model._scaling.detach())
+        rotation_list.append(model._rotation.detach())
+    
+    # Concatenate all parameters
+    combined_model._xyz = nn.Parameter(torch.cat(xyz_list, dim=0))
+    combined_model._features_dc = nn.Parameter(torch.cat(features_dc_list, dim=0))
+    combined_model._features_rest = nn.Parameter(torch.cat(features_rest_list, dim=0))
+    combined_model._opacity = nn.Parameter(torch.cat(opacity_list, dim=0))
+    combined_model._scaling = nn.Parameter(torch.cat(scaling_list, dim=0))
+    combined_model._rotation = nn.Parameter(torch.cat(rotation_list, dim=0))
+
+    combined_model.max_radii2D = torch.zeros(combined_model._xyz.shape[0], device=combined_model._xyz.device)
+    
+    # Count of old Gaussians (for setting learning rates)
+    gaussians_num = len(gslist)
+    total_count = combined_model._xyz.shape[0]
+    
+    print(f'{gaussians_num} Gaussians are combined into one model, with {total_count} points')
+
+    return combined_model
