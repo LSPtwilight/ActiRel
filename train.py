@@ -66,6 +66,7 @@ if __name__ == '__main__':
     parser.add_argument('--render_only', action='store_true', help='Only run the render all img step')
 
     parser.add_argument('--select_inpaint_num', type=int, default=20, help='Number of views to select for inpainting.')
+    parser.add_argument('--scratch_train', action='store_true', help='Run the scratch training step')
     args = parser.parse_args()
     
     # Set output paths
@@ -84,7 +85,8 @@ if __name__ == '__main__':
     ref_views_save_root_path = os.path.join(free_gaussians_path, 'see3d_render', 'ref-views')
     inpaint_root_dir = os.path.join(free_gaussians_path, 'see3d_render', 'select-gs-inpainted')
     continue_train_root_dir = os.path.join(free_gaussians_path, 'gs-continue-training')
-
+    scratch_train_root_dir = os.path.join(free_gaussians_path, 'gs-scratch-training')
+    
     # Dense supervision (Optional)
     if args.dense_supervision:
         dense_arg = " ".join([
@@ -199,6 +201,17 @@ if __name__ == '__main__':
         "--train_iterations", '7000',
     ])
 
+    scratch_train_command = " ".join([
+        "python", "2d-gaussian-splatting/train_gaussian_from_scratch.py",
+        "-s", mast3r_scene_path,
+        "-m", free_gaussians_path,
+        "--warp_root_path", warp_root_dir,
+        "--inpaint_root_path", inpaint_root_dir,
+        "--output_root_path", scratch_train_root_dir,
+        "--load_iteration", '7000',
+        "--train_iterations", '7000',
+    ])
+
     eval_command = " ".join([
         "python", "2d-gaussian-splatting/eval/eval.py",
         "--source_path", args.source_path,
@@ -222,8 +235,12 @@ if __name__ == '__main__':
     os.system(see3d_render_command)
     os.system(see3d_inpaint_command)
 
-    # continue training
-    os.system(continue_train_command)
+    if args.scratch_train:
+        # scratch training
+        os.system(scratch_train_command)
+    else:
+        # continue training
+        os.system(continue_train_command)
 
     # render all images, export mesh, and evaluate
     os.system(render_all_img_command)
