@@ -34,6 +34,7 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    instance_map: np.array
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -41,6 +42,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+    mapping_id_dict: dict
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -65,7 +67,14 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, mapping_id_dict=None):
+
+    if mapping_id_dict is None:
+        load_instance_mask = False
+    else:
+        load_instance_mask = True
+        instance_mask_folder = images_folder.replace('images', 'instance_masks')
+
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -98,8 +107,17 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
 
+        if load_instance_mask:
+            instance_mask_name = os.path.basename(image_path).split("_")[0] + "_instance.npy"
+            instance_map = np.load(os.path.join(instance_mask_folder, instance_mask_name))
+            ins_list = np.unique(instance_map)
+            for i in ins_list:
+                instance_map[instance_map == i] = mapping_id_dict[i]
+        else:
+            instance_map = None
+
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+                              image_path=image_path, image_name=image_name, width=width, height=height, instance_map=instance_map)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -156,7 +174,18 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
             cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+
+    instance_json_path = os.path.join(path, "instance_id.json")
+    if os.path.exists(instance_json_path):
+        with open(instance_json_path, 'r') as f:
+            obj_dict = json.load(f)
+        gt_obj_id_list = list(obj_dict.values())
+        gt_obj_id_list = [0] + gt_obj_id_list                                                   # add background, background id is 0
+        mapping_id_dict = {obj_id: idx for idx, obj_id in enumerate(gt_obj_id_list)}            # mapping from gt id to continuous id (nerf id)
+    else:
+        mapping_id_dict = None
+
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), mapping_id_dict=mapping_id_dict)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     # if eval:
@@ -187,7 +216,8 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path)
+                           ply_path=ply_path,
+                           mapping_id_dict=mapping_id_dict)
     return scene_info
 
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):

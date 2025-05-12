@@ -110,3 +110,16 @@ And finally, download the MASt3R-SfM retrieval checkpoint:
 wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_trainingfree.pth -P ./mast3r/checkpoints/
 wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_codebook.pkl -P ./mast3r/checkpoints/
 ```
+
+</details>
+
+### 2.data
+#### 2.1. Replica (from DP-Recon)
+```
+https://drive.google.com/drive/folders/1VUo6egav6j4aBw_ADRFP4NEE8pgB4alq
+```
+
+#### 2.2. Mip-NeRF 360 (from ReconFusion)
+```
+https://drive.google.com/drive/folders/10oT2_OQ9Sjh5wlfJQoGx2y7ZKYwpgNg5
+```

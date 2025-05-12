@@ -127,10 +127,16 @@ def get_gaussian_parameters_from_charts_data(
     ratio_th=5.,
     normal_scale=1e-4,
     normalized_scales=0.5,
+    visibility_masks=None,
 ):
     """Get gaussian parameters from charts data."""
     charts_pts = charts_data['pts'] / charts_data['scale_factor']
     charts_confs = charts_data['confs']
+
+    if visibility_masks is not None:
+        visibility_masks = torch.cat(visibility_masks, dim=0)
+        charts_confs = charts_confs * visibility_masks
+        conf_th = 0.1
     
     print("Conf Max/min: ", charts_confs.max(), charts_confs.min())
     

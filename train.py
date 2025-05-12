@@ -103,11 +103,17 @@ if __name__ == '__main__':
         args.free_gaussians_config = 'long' if args.dense_supervision else 'default'
 
     if args.use_view_config:
-        view_config_path = os.path.join(args.source_path, f'split-{args.config_view_num}views.json')
-        with open(view_config_path, 'r') as f:
-            view_config = json.load(f)
         n_images = None
-        image_idx_list = view_config['train']
+        view_config_path = os.path.join(args.source_path, f'split-{args.config_view_num}views.json')
+        if os.path.exists(view_config_path):
+            with open(view_config_path, 'r') as f:
+                view_config = json.load(f)
+            image_idx_list = view_config['train']
+        else:
+            view_config_path = os.path.join(args.source_path, f'train_test_split_{args.config_view_num}.json')
+            with open(view_config_path, 'r') as f:
+                view_config = json.load(f)
+            image_idx_list = view_config['train_ids']
     else:
         n_images = args.n_images
         image_idx_list = args.image_idx

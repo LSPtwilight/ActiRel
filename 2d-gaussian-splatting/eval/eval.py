@@ -42,9 +42,12 @@ if __name__ == '__main__':
 
     pred_mesh_path = os.path.join(pred_scene_mesh_root_path, iter_file_list[0])
     gt_mesh_path = os.path.join(args.source_path, 'gt_mesh', 'scene_mesh.ply')
-    mesh_metrics = eval_mesh(pred_mesh_path, gt_mesh_path)
-    for k, v in mesh_metrics.items():
-        metrics[k] = round(v, 5)
+    if os.path.exists(gt_mesh_path):
+        mesh_metrics = eval_mesh(pred_mesh_path, gt_mesh_path)
+        for k, v in mesh_metrics.items():
+            metrics[k] = round(v, 5)
+    else:
+        print(f"No gt mesh found at {gt_mesh_path}")
 
     # eval obj mesh
     if args.eval_obj_mesh:
@@ -63,9 +66,15 @@ if __name__ == '__main__':
 
     # eval images
     split_file = os.path.join(args.source_path, f'split-{sparse_view_num}views.json')
-    with open(split_file, 'r') as f:
-        split_dict = json.load(f)
-    test_views_list = split_dict['test']
+    if os.path.exists(split_file):
+        with open(split_file, 'r') as f:
+            split_dict = json.load(f)
+        test_views_list = split_dict['test']
+    else:
+        split_file = os.path.join(args.source_path, f'train_test_split_{sparse_view_num}.json')
+        with open(split_file, 'r') as f:
+            split_dict = json.load(f)
+        test_views_list = split_dict['test_ids']
     test_views_list.sort()
 
     metrics['test_views_num'] = len(test_views_list)

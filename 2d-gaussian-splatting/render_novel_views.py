@@ -16,7 +16,7 @@ from PIL import Image
 
 from utils.general_utils import safe_state
 
-from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose
+from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose, generate_see3d_camera_by_lookat_object_centric
 from guidance.See3D_modules.pcd_render_util import init_pcd_render_multiview, save_rendered_images, filter_pcd_by_edge, downsample_pcd, vis_depth
 
 from matcha.dm_scene.charts import load_charts_data, build_priors_from_charts_data, depths_to_points_parallel
@@ -49,9 +49,15 @@ if __name__ == "__main__":
 
     train_view_num = args.train_view_num
     view_json_path = os.path.join(args.data_path, f'split-{train_view_num}views.json')
-    with open(view_json_path, 'r') as f:
-        view_data = json.load(f)
-    train_id_list = view_data['train']
+    if os.path.exists(view_json_path):
+        with open(view_json_path, 'r') as f:
+            view_data = json.load(f)
+        train_id_list = view_data['train']
+    else:
+        view_json_path = os.path.join(args.data_path, f'train_test_split_{train_view_num}.json')
+        with open(view_json_path, 'r') as f:
+            view_data = json.load(f)
+        train_id_list = view_data['train_ids']
     train_viewpoints = [viewpoints[i] for i in train_id_list]
 
     novel_views_save_root_path = os.path.join(args.model_path, 'see3d_render')
@@ -60,8 +66,13 @@ if __name__ == "__main__":
     # copy reference images
     ref_views_save_root_path = os.path.join(args.model_path, 'see3d_render', 'ref-views')
     os.makedirs(ref_views_save_root_path, exist_ok=True)
+
+    img_data_path = os.path.join(args.data_path, 'images')
+    img_data_list = os.listdir(img_data_path)
+    img_data_list.sort()
     for ref_view_id in train_id_list:
-        shutil.copy(os.path.join(args.data_path, 'images', f'{ref_view_id:06d}_rgb.png'), os.path.join(ref_views_save_root_path, f'{ref_view_id:06d}_rgb.png'))
+        # shutil.copy(os.path.join(args.data_path, 'images', f'{ref_view_id:06d}_rgb.png'), os.path.join(ref_views_save_root_path, f'{ref_view_id:06d}_rgb.png'))
+        shutil.copy(os.path.join(img_data_path, img_data_list[ref_view_id]), os.path.join(ref_views_save_root_path, img_data_list[ref_view_id]))
 
     # render train views
     train_save_root_path = os.path.join(novel_views_save_root_path, 'render-train-views')
@@ -89,7 +100,8 @@ if __name__ == "__main__":
     gs_train_view_points = depths_to_points_parallel(gs_train_view_depths, train_viewpoints)
 
     # generate novel cameras
-    novel_poses, novel_cams = generate_see3d_camera_by_lookat(train_viewpoints, gs_train_view_depths.squeeze(1), gs_train_view_points)
+    # novel_poses, novel_cams = generate_see3d_camera_by_lookat(train_viewpoints, gs_train_view_depths.squeeze(1), gs_train_view_points)
+    novel_poses, novel_cams = generate_see3d_camera_by_lookat_object_centric(train_viewpoints)
 
     # # vis train camera
     # train_c2ws = []
@@ -99,7 +111,8 @@ if __name__ == "__main__":
     #     train_c2ws.append(c2w)
     # train_c2ws = np.array(train_c2ws)
 
-    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/data/replica/scan6/gt_mesh/scene_mesh.ply'
+    # # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/data/replica/scan6/gt_mesh/scene_mesh.ply'
+    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/output/mipnerf360-6-views/bonsai-t1-scratch/tetra_meshes/tetra_mesh_binary_search_7_iter_14000.ply'
     # vis_camera_pose(novel_poses, mesh_path=temp_mesh_path)
     # # vis_camera_pose(train_c2ws, mesh_path=temp_mesh_path)
     # exit()
@@ -161,6 +174,6 @@ if __name__ == "__main__":
         shutil.copy(os.path.join(gs_output_dir, f'warp_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'warp_frame{idx:06d}.png'))
 
     # save need inpaint views cameras
-    save_cameras['n_views'] = 10
+    save_cameras['n_views'] = len(need_inpaint_views_cams)
     np.savez(os.path.join(select_gs_output_dir, 'see3d_cameras.npz'), **save_cameras)
     print(f'See3D cameras save to {os.path.join(select_gs_output_dir, "see3d_cameras.npz")}')

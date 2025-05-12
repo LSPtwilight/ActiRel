@@ -776,3 +776,47 @@ def combine_gslist_simple(gslist):
     print(f'{gaussians_num} Gaussians are combined into one model, with {total_count} points')
 
     return combined_model
+
+def get_obj_gaussian_by_mask(gaussian, obj_gs_mask):
+    """
+    Extract object-specific Gaussians based on a binary mask.
+    
+    Args:
+        gaussian: Source GaussianModel containing all Gaussians
+        obj_gs_mask: Binary mask indicating which Gaussians belong to the object
+        
+    Returns:
+        A new GaussianModel instance containing only the Gaussians of the object
+    """
+    # Create a new GaussianModel with the same SH degree
+    obj_gaussian = GaussianModel(gaussian.max_sh_degree)
+    
+    # Extract parameters for the selected Gaussians
+    obj_gaussian._xyz = torch.nn.Parameter(gaussian._xyz[obj_gs_mask].clone().detach())
+    obj_gaussian._features_dc = torch.nn.Parameter(gaussian._features_dc[obj_gs_mask].clone().detach())
+    obj_gaussian._features_rest = torch.nn.Parameter(gaussian._features_rest[obj_gs_mask].clone().detach())
+    obj_gaussian._scaling = torch.nn.Parameter(gaussian._scaling[obj_gs_mask].clone().detach())
+    obj_gaussian._rotation = torch.nn.Parameter(gaussian._rotation[obj_gs_mask].clone().detach())
+    obj_gaussian._opacity = torch.nn.Parameter(gaussian._opacity[obj_gs_mask].clone().detach())
+    
+    # Copy other necessary properties
+    obj_gaussian.active_sh_degree = gaussian.active_sh_degree
+    obj_gaussian.max_sh_degree = gaussian.max_sh_degree
+    obj_gaussian.spatial_lr_scale = gaussian.spatial_lr_scale
+    
+    # Handle MIP filtering if used
+    if hasattr(gaussian, 'use_mip_filter') and gaussian.use_mip_filter:
+        obj_gaussian.set_mip_filter(True)
+        if hasattr(gaussian, 'mip_filter'):
+            obj_gaussian.mip_filter = gaussian.mip_filter[obj_gs_mask].clone().detach()
+    
+    # Initialize max_radii2D with the right size
+    obj_gaussian.max_radii2D = torch.zeros(
+        obj_gaussian._xyz.shape[0], device=obj_gaussian._xyz.device
+    )
+    
+    # Print statistics
+    print(f"Extracted {obj_gaussian._xyz.shape[0]} Gaussians for the object "
+          f"(out of {gaussian._xyz.shape[0]} total Gaussians)")
+    
+    return obj_gaussian

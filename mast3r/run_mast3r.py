@@ -194,6 +194,35 @@ if __name__ == "__main__":
                         [0., 0., 1.]
                     ])
 
+            elif os.path.exists(f'{scene_path}/transforms.json'):
+                print("Loading calibrated poses from Blender / Mip-NeRF 360 transforms.json")
+                src_intrinsics = {}
+                src_extrinsics = {}
+                with open(f'{scene_path}/transforms.json', 'r') as f:
+                    data = json.load(f)
+                frames = data['frames']
+                for frame in frames:
+                    img_name = frame['file_path'].split('/')[-1]
+
+                    # NeRF 'transform_matrix' is a camera-to-world transform
+                    c2w = np.array(frame["transform_matrix"])
+                    # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+                    c2w[:3, 1:3] *= -1
+
+                    src_extrinsics[img_name] = np.linalg.inv(c2w)
+                    
+                    # get intrinsics
+                    cx = data['cx']
+                    cy = data['cy']
+                    fl_x = data['fl_x']
+                    fl_y = data['fl_y']
+
+                    src_intrinsics[img_name] = np.array([
+                        [fl_x, 0., cx],
+                        [0., fl_y, cy],
+                        [0., 0., 1.]
+                    ])
+                    
             else:
                 raise FileNotFoundError(f'Calibration data ({scene_path}/sparse/0/) not found.')
 
@@ -412,10 +441,24 @@ if __name__ == "__main__":
         print_debug('original extrinsics')
         print_debug(extrinsics)
 
+        # copy instance masks and instance id json files
+        src_instance_json_path = os.path.join(scene_path, 'instance_id.json')
+        if os.path.exists(src_instance_json_path):
+            print("Exist instance annotation file, copy it to the output directory.")
+            dst_instance_json_path = os.path.join(output_dir, 'instance_id.json')
+            shutil.copy(src_instance_json_path, dst_instance_json_path)
+
+            src_instance_mask_path = os.path.join(scene_path, 'instance_masks')
+            dst_instance_mask_path = os.path.join(output_dir, 'instance_masks')
+            shutil.copytree(src_instance_mask_path, dst_instance_mask_path)
+        else:
+            print("No instance annotation file found, skip copying.")
+
         # Modify images and intrinsics so that the principal points become the center of the images, before feeding them to MASt3R
         src_img_path = os.path.join(scene_path, 'images')
         dst_img_path = os.path.join(output_dir, 'images')
-        shutil.copytree(src_img_path, dst_img_path)
+        if not os.path.exists(dst_img_path):
+            shutil.copytree(src_img_path, dst_img_path)
         # os.makedirs(f'{output_dir}/images', exist_ok=True)
         for idx_img, img_path in enumerate(filelist):
             img_fname = img_path.split('/')[-1]

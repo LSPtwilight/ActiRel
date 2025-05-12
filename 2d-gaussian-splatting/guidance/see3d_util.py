@@ -69,7 +69,7 @@ class See3D(nn.Module):
                 }
         
     def get_image_files(self, folder_path):
-        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.webp']
+        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.webp', '*.JPG', '*.JPEG', '*.PNG', '*.GIF', '*.BMP', '*.TIFF', '*.WEBP']
         
         image_files = []
         for ext in image_extensions:
