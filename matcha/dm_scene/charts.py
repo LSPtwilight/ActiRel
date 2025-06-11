@@ -175,6 +175,62 @@ def get_gaussian_parameters_from_charts_data(
     
     return gaussian_params
 
+def get_gaussian_parameters_from_pda_data(
+    pda_points, 
+    images, 
+    conf_th=-1.,
+    ratio_th=5.,
+    normal_scale=1e-4,
+    normalized_scales=0.5,
+    visibility_masks=None,
+):
+    """Get gaussian parameters from pda data."""
+
+    # NOTE: pda_conf temp
+    pda_conf = torch.ones((pda_points.shape[0], pda_points.shape[1], 1), device=pda_points.device, dtype=torch.float32)
+
+    if visibility_masks is not None:
+        visibility_masks = torch.cat(visibility_masks, dim=0)
+        pda_conf = pda_conf * visibility_masks
+        conf_th = 0.1
+    
+    print("Conf Max/min: ", pda_conf.max(), pda_conf.min())
+    
+    # Get manifold mesh and remove faces with low confidence if needed
+    manifold = get_manifold_meshes_from_pointmaps(
+        points3d=pda_points,
+        imgs=images, 
+        # masks=pda_conf > conf_th,  
+        masks=None,
+        return_single_mesh_object=True
+    )
+    
+    # Remove elongated faces
+    faces_verts = manifold.verts_packed()[manifold.faces_packed()]  # (n_faces, 3, 3)
+    sides = (
+        torch.roll(faces_verts, 1, dims=1)  # C, A, B
+        - faces_verts  # A, B, C
+    )  # (n_faces, 3, 3)  ;  AC, BA, CB
+    normalized_sides = torch.nn.functional.normalize(sides, dim=-1)  # (n_faces, 3, 3)  ;  AC/||AC||, BA/||BA||, CB/||CB||
+    alts = (
+        sides  # AC
+        - (sides * torch.roll(normalized_sides, -1, dims=1)).sum(dim=-1, keepdim=True) * normalized_sides # - (AC . BA) BA / ||BA||^2
+    )  # (n_faces, 3, 3)
+    alt_lengths = alts.norm(dim=-1)
+    alt_ratios = alt_lengths.max(dim=1).values / alt_lengths.min(dim=1).values
+    faces_mask = alt_ratios < ratio_th
+    manifold = remove_faces_from_single_mesh(manifold, faces_to_keep_mask=faces_mask)
+    
+    # Get gaussian parameters
+    gaussian_params = get_gaussian_surfel_parameters_from_mesh(
+        barycentric_coords=1,
+        mesh=manifold,
+        normalized_scales=normalized_scales,
+        get_colors_from_mesh=True,
+        normal_scale=normal_scale,
+    )
+    
+    return gaussian_params
 
 def transform_points_world_to_view(
     cameras,

@@ -54,6 +54,12 @@ pip install transformers==4.28.1
 pip install xformers==0.0.20
 pip install pytransform3d
 pip install imageio
+
+# sam
+pip install git+https://github.com/facebookresearch/segment-anything.git
+
+# detectron2 just for visualization
+python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
 ```
 
 Then, install the 2D Gaussian splatting and adaptive tetrahedralization dependencies:

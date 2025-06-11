@@ -302,3 +302,40 @@ sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo
 }
+
+
+# NOTE: load gaussian cameras
+def fill_config_args(args):
+    args.sh_degree = 3
+    args.images = 'images'
+    args.resolution = -1
+    args.white_background = False
+    args.data_device = "cuda"
+    args.eval = False
+    args.render_items=['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
+
+    return args
+
+from utils.camera_utils import cameraList_from_camInfos
+def load_cameras(args, resolution_scales=[1.0], scale=1.0):
+
+    args = fill_config_args(args)
+
+    if os.path.exists(os.path.join(args.source_path, "sparse")):
+        scene_info = readColmapSceneInfo(args.source_path, args.images, args.eval)
+    elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
+        print("Found transforms_train.json file, assuming Blender data set!")
+        scene_info = readNerfSyntheticInfo(args.source_path, args.white_background, args.eval)
+    else:
+        assert False, "Could not recognize scene type!"
+
+    train_cameras = {}
+    test_cameras = {}
+
+    for resolution_scale in resolution_scales:
+        print("Loading Training Cameras")
+        train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
+        print("Loading Test Cameras")
+        test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
+
+    return train_cameras[scale], test_cameras[scale]

@@ -25,6 +25,7 @@ from matcha.dm_scene.cameras import CamerasWrapper, P3DCameras
 from matcha.dm_utils.rendering import fov2focal
 
 from PIL import Image
+from sklearn.linear_model import RANSACRegressor
 
 class PointMapDepthAnything(PointMap):
     def __init__(
@@ -255,7 +256,8 @@ def fit_depth_to_point_cloud(
 def depth_linear_align(
     disp:torch.Tensor,
     render_depth:torch.Tensor,
-    visible_mask:torch.Tensor
+    visible_mask:torch.Tensor,
+    return_alpha_beta:bool=False,
 ):
     """
     Modify from fit_depth_to_point_cloud function.
@@ -273,8 +275,67 @@ def depth_linear_align(
     beta = (beta_num / beta_denom).item()
     alpha = (torch.sum(weights * (true_points_disp - beta * depthmap_points_disp)) / torch.sum(weights)).item()
     
+    if return_alpha_beta:
+        return 1. / (alpha + beta * disp), alpha, beta
+    
     return 1. / (alpha + beta * disp)
 
+def depth_linear_align_2(
+    depth:torch.Tensor,
+    render_depth:torch.Tensor,
+    visible_mask:torch.Tensor,
+    return_alpha_beta:bool=False,
+):
+    """
+    Use depth to align the render depth. (alpha + beta * depth)
+    """
+
+    true_points_depth = render_depth[visible_mask]
+    depthmap_points_depth = depth[visible_mask]
+
+    weights = torch.ones_like(true_points_depth)
+
+    beta_num = torch.sum(weights * true_points_depth * depthmap_points_depth) - torch.sum(weights * true_points_depth) * torch.sum(weights * depthmap_points_depth) / torch.sum(weights)
+    beta_denom = torch.sum(weights * depthmap_points_depth ** 2) - torch.sum(weights * depthmap_points_depth) ** 2 / torch.sum(weights)
+    beta = (beta_num / beta_denom).item()
+    alpha = (torch.sum(weights * (true_points_depth - beta * depthmap_points_depth)) / torch.sum(weights)).item()
+    
+    if return_alpha_beta:
+        return alpha + beta * depth, alpha, beta
+    
+    return alpha + beta * depth
+
+def depth_linear_align_ransac(
+    depth:torch.Tensor,
+    render_depth:torch.Tensor,
+    visible_mask:torch.Tensor,
+    return_alpha_beta:bool=False,
+):
+    """
+    Modify from fit_depth_to_point_cloud function.
+    use RANSACRegressor to fit the depth.
+    """
+
+    true_points_depth = render_depth[visible_mask].cpu().numpy()
+    depthmap_points_depth = depth[visible_mask].cpu().numpy()
+
+    ransac = RANSACRegressor(
+        min_samples=5,                  # a little sensitive to this parameter
+        residual_threshold=0.02,
+        random_state=42,
+    )
+    ransac.fit(depthmap_points_depth.reshape(-1, 1), true_points_depth.reshape(-1, 1))
+
+    beta = (ransac.estimator_.coef_[0]).item()
+    alpha = (ransac.estimator_.intercept_).item()
+    inlier_mask = ransac.inlier_mask_
+
+    inlier_ratio = inlier_mask.sum() / len(inlier_mask)
+
+    if return_alpha_beta:
+        return alpha + beta * depth, alpha, beta, inlier_ratio
+
+    return alpha + beta * depth, inlier_ratio
 
 def get_pointmap_from_see3d_inpainting_with_depthanything(
     # See3D inpainting data

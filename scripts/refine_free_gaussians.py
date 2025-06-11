@@ -24,6 +24,8 @@ if __name__ == '__main__':
     
     # Config
     parser.add_argument('-c', '--config', type=str, default='default')
+
+    parser.add_argument('--refine_depth_path', type=str, default=None, help='Path to the refine depth directory')
     
     args = parser.parse_args()
     
@@ -55,22 +57,43 @@ if __name__ == '__main__':
         dense_arg = ""
 
     # Define command
-    command = " ".join([
-        "python", "2d-gaussian-splatting/train_with_charts.py",
-        "-s", args.mast3r_scene,
-        "-m", args.output_path,
-        "--iterations", str(config['iterations']),
-        "--densify_until_iter", str(config['densify_until_iter']),
-        "--opacity_reset_interval", str(config['opacity_reset_interval']),
-        "--depth_ratio", str(config['depth_ratio']),
-        "--use_mip_filter" if config['use_mip_filter'] else "",
-        dense_arg,
-        "--normal_consistency_from", str(config['normal_consistency_from']),
-        "--distortion_from", str(config['distortion_from']),
-        "--depthanythingv2_checkpoint_dir", args.depthanythingv2_checkpoint_dir,
-        "--depthanything_encoder", args.depthanything_encoder,
-        "--dense_regul", args.dense_regul,
-    ])
+    if args.refine_depth_path is None:
+        print('no refine depth path, train gs use charts')
+        command = " ".join([
+            "python", "2d-gaussian-splatting/train_with_charts.py",
+            "-s", args.mast3r_scene,
+            "-m", args.output_path,
+            "--iterations", str(config['iterations']),
+            "--densify_until_iter", str(config['densify_until_iter']),
+            "--opacity_reset_interval", str(config['opacity_reset_interval']),
+            "--depth_ratio", str(config['depth_ratio']),
+            "--use_mip_filter" if config['use_mip_filter'] else "",
+            dense_arg,
+            "--normal_consistency_from", str(config['normal_consistency_from']),
+            "--distortion_from", str(config['distortion_from']),
+            "--depthanythingv2_checkpoint_dir", args.depthanythingv2_checkpoint_dir,
+            "--depthanything_encoder", args.depthanything_encoder,
+            "--dense_regul", args.dense_regul,
+        ])
+    else:
+        print(f'refine depth path {args.refine_depth_path}, train gs use refine depth')
+        command = " ".join([
+            "python", "2d-gaussian-splatting/train_with_charts_use_refine_depth.py",
+            "-s", args.mast3r_scene,
+            "-m", args.output_path,
+            "--iterations", str(config['iterations']),
+            "--densify_until_iter", str(config['densify_until_iter']),
+            "--opacity_reset_interval", str(config['opacity_reset_interval']),
+            "--depth_ratio", str(config['depth_ratio']),
+            "--use_mip_filter" if config['use_mip_filter'] else "",
+            dense_arg,
+            "--normal_consistency_from", str(config['normal_consistency_from']),
+            "--distortion_from", str(config['distortion_from']),
+            "--depthanythingv2_checkpoint_dir", args.depthanythingv2_checkpoint_dir,
+            "--depthanything_encoder", args.depthanything_encoder,
+            "--dense_regul", args.dense_regul,
+            "--refine_depth_path", args.refine_depth_path,
+        ])
     
     # Run command
     CONSOLE.print(f"[INFO] Running command:\n{command}")

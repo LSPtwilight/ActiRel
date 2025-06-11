@@ -961,7 +961,7 @@ def check_valid_camera_center(train_cams, train_depths, novel_cam_centers):
     
     return valid_mask
 
-def build_visibility_masks(cameras, depths, points, depth_threshold=0.1, least_num_views=1):
+def build_visibility_masks(cameras, depths, points, mast3r_matching=None, depth_threshold=0.1, least_num_views=1, return_origin_masks=False):
     """
     Build visibility masks for each viewpoint camera
     
@@ -969,8 +969,10 @@ def build_visibility_masks(cameras, depths, points, depth_threshold=0.1, least_n
         cameras: List of GSCamera objects representing cameras
         depths: List of torch.Tensor, [M, H, W], depths of points in camera coordinate
         points: torch.Tensor, [M, N, 3], points in world coordinate
+        mast3r_matching: dict, {namei_namej: {i: [u1, v1], j: [u2, v2], ...}}, matching points between images
         depth_threshold: float, depth threshold for visibility check
         least_num_views: int, least number of views for visibility check
+        return_origin_masks: bool, whether to return the original times visibility masks
 
     Returns:
         visibility_masks: List of torch.Tensor, [M, H, W], boolean mask indicating which viewpoint camera centers are visible
@@ -978,7 +980,9 @@ def build_visibility_masks(cameras, depths, points, depth_threshold=0.1, least_n
 
     view_num = len(cameras)
     visibility_masks = []
+    visibility_times_masks = []
     for i in range(view_num):
+        name_i = cameras[i].image_name
         src_depth, src_pnts = depths[i], points[i]
         _, H, W = src_depth.shape
         src_visibility_mask = torch.zeros(H, W, device=src_depth.device)
@@ -986,8 +990,9 @@ def build_visibility_masks(cameras, depths, points, depth_threshold=0.1, least_n
         for j in range(view_num):
             if i == j:
                 continue
+            name_j = cameras[j].image_name
             tgt_cam, tgt_depth = cameras[j], depths[j].squeeze(0)
-            
+
             # Project source points to target camera view
             tgt_pnts_depth, tgt_pnts_2d, tgt_pnts_in_image = project_points_to_image(tgt_cam, src_pnts)
             if not torch.any(tgt_pnts_in_image):
@@ -1012,23 +1017,46 @@ def build_visibility_masks(cameras, depths, points, depth_threshold=0.1, least_n
             depth_diff = torch.abs(valid_points_depth - depth_at_pixels)
             relative_diff = depth_diff / (valid_points_depth + 1e-6)
             depth_valid = relative_diff < depth_threshold
+            depth_valid = depth_valid & (valid_points_depth > 0)            # avoid negative depth
             
             # Map back to source coordinates (from flattened to 2D)
             src_indices = valid_indices[depth_valid]
             src_v = src_indices // W
             src_u = src_indices % W
-            
-            # Update temporary visibility mask
-            temp_visibility_mask[src_v, src_u] = 1.0
+
+            if mast3r_matching is not None:
+
+                pair_name = f"{name_i}_{name_j}" if i<j else f"{name_j}_{name_i}"
+                if pair_name in mast3r_matching:
+                    if i < j:
+                        kpts_i = mast3r_matching[pair_name]['kpts1']
+                        kpts_j = mast3r_matching[pair_name]['kpts2']
+                        assert name_i == mast3r_matching[pair_name]['img1']
+                    else:
+                        kpts_i = mast3r_matching[pair_name]['kpts2']
+                        kpts_j = mast3r_matching[pair_name]['kpts1']
+                        assert name_i == mast3r_matching[pair_name]['img2']
+
+                    src_mast3r_u = [x[0] for x in kpts_i]
+                    src_mast3r_v = [x[1] for x in kpts_i]
+                    temp_visibility_mask[src_mast3r_v, src_mast3r_u] = 1.0              # use mast3r matching to update visibility mask
+
+            else:
+                # Update temporary visibility mask
+                temp_visibility_mask[src_v, src_u] = 1.0
             
             # Add to source visibility mask
             src_visibility_mask += temp_visibility_mask
         
         # Check if the number of views is greater than or equal to least_num_views
+        visibility_times_masks.append(src_visibility_mask.float().unsqueeze(0))
         src_visibility_mask = (src_visibility_mask >= least_num_views).float().unsqueeze(0)     # [1, H, W]
         visibility_masks.append(src_visibility_mask)
 
-    return visibility_masks
+    if return_origin_masks:
+        return visibility_times_masks
+    else:
+        return visibility_masks
 
 def farthest_point_sample(points, num_samples):
     """

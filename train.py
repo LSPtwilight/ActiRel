@@ -67,6 +67,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--select_inpaint_num', type=int, default=20, help='Number of views to select for inpainting.')
     parser.add_argument('--scratch_train', action='store_true', help='Run the scratch training step')
+    parser.add_argument('--use_refine_depth', action='store_true', help='Use refine depth for training')
     args = parser.parse_args()
     
     # Set output paths
@@ -141,6 +142,13 @@ if __name__ == '__main__':
         "--depthanything_encoder", args.depthanything_encoder,
     ])
     
+    if args.use_refine_depth:
+        refine_depth_path = os.path.join(mast3r_scene_path, 'render-charts-train-views')
+        if not os.path.exists(refine_depth_path):
+            raise ValueError(f'Refine depth path {refine_depth_path} does not exist')
+    else:
+        refine_depth_path = None
+
     refine_free_gaussians_command = " ".join([
         "python", "scripts/refine_free_gaussians.py",
         "--mast3r_scene", mast3r_scene_path,
@@ -148,6 +156,7 @@ if __name__ == '__main__':
         "--config", args.free_gaussians_config,
         dense_arg,
         "--dense_regul", args.dense_regul,
+        "--refine_depth_path", refine_depth_path,
     ])
 
     render_all_img_command = " ".join([
