@@ -663,7 +663,7 @@ def training(
         plt.ylabel('Number of Gaussian Points')
         plt.title('Gaussian Points Count During Training')
         plt.grid(True)
-        plt.savefig(f"output/replica/scan1/free_gaussians/gaussian_points_count.png")
+        plt.savefig(f"{dataset.model_path}/gaussian_points_count.png")
         plt.close()
     print("Training complete.")
 
