@@ -647,6 +647,11 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    def gs_scale_loss(self, max_scale_thresh=0.05):
+        max_scale = self.get_scaling.max(dim=1).values
+        excess = torch.clamp(max_scale - max_scale_thresh, min=0.0)
+        loss = torch.sum(excess ** 2)
+        return loss
 
 def combine_gslist(gslist):
     """
@@ -820,3 +825,12 @@ def get_obj_gaussian_by_mask(gaussian, obj_gs_mask):
           f"(out of {gaussian._xyz.shape[0]} total Gaussians)")
     
     return obj_gaussian
+
+def get_gaussian_normal(rotation, scaling, scale_modifier=1.0):
+
+    q = torch.nn.functional.normalize(rotation, dim=-1)
+    scales_3d = torch.cat([scaling * scale_modifier, torch.ones_like(scaling[:, :1])], dim=-1)
+    L = build_scaling_rotation(scales_3d, q)  # (N, 3, 3), L = R * S
+    normal = L[:, :, 2]
+
+    return normal

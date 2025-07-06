@@ -327,6 +327,48 @@ def depths_to_points_parallel(
     points = depthmap.reshape(-1, H*W, 1) * rays_d + rays_o
     return points
 
+def depths_to_sample_points_parallel(
+    depthmap,
+    sample_num,
+    cameras=None,
+    world_view_transforms=None, 
+    full_proj_transforms=None,
+):
+    """Reworked. Originally comes from 2DGS.
+
+    Args:
+        world_view_transforms (_type_): (n_camera, 4, 4)
+        full_proj_transforms (_type_): (n_camera, 4, 4)
+        depthmap (_type_): (n_camera, H, W) or (n_camera, 1, H, W)
+
+    Returns:
+        _type_: _description_
+    """
+    no_matrix_provided = (world_view_transforms is None) or (full_proj_transforms is None)
+    if no_matrix_provided and cameras is None:
+        raise ValueError("Either provide the camera matrices or the camera objects.")
+    if world_view_transforms is None:
+        world_view_transforms = torch.stack([gs_camera.world_view_transform for gs_camera in cameras])
+    if full_proj_transforms is None:
+        full_proj_transforms = torch.stack([gs_camera.full_proj_transform for gs_camera in cameras])
+    
+    c2w = (world_view_transforms.transpose(-1, -2)).inverse()  # (n_camera, 4, 4)
+    W, H = depthmap.shape[-1], depthmap.shape[-2]
+    ndc2pix = torch.tensor([
+        [W / 2, 0, 0, (W) / 2],
+        [0, H / 2, 0, (H) / 2],
+        [0, 0, 0, 1]]).float().cuda().T  # (4, 3)
+    projection_matrix = c2w.transpose(-1, -2) @ full_proj_transforms  # (n_camera, 4, 4)
+    intrins = (projection_matrix @ ndc2pix)[..., :3,:3].transpose(-1, -2)  # (n_camera, 3, 3)
+    
+    grid_x, grid_y = torch.meshgrid(torch.arange(W, device='cuda').float(), torch.arange(H, device='cuda').float(), indexing='xy')  # (H, W)
+    points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3)  # (H * W, 3)
+    rays_d = points[None] @ intrins.inverse().transpose(-1, -2) @ c2w[..., :3,:3].transpose(-1, -2)  # (n_camera, H * W, 3)
+    rays_o = c2w[..., None, :3,3]  # (n_camera, 1, 3)
+    t_vals = torch.linspace(0, 1, sample_num, device=depthmap.device)  # (sample_num,)
+    t_vals = t_vals.reshape(1, 1, sample_num, 1) * depthmap.reshape(-1, H*W, 1, 1)  # (n_camera, H * W, sample_num, 1)
+    points = rays_o.unsqueeze(-2) + t_vals * rays_d.unsqueeze(-2)  # (n_camera, H * W, sample_num, 3)
+    return points
 
 def get_points_depth_in_depthmap_parallel(
     pts:torch.Tensor, 

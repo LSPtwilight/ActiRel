@@ -117,3 +117,15 @@ def get_weights_by_single_view(gaussians, viewpoint, pipe, background, unseen_va
         w[unseen_mask] = unseen_value                                   # this gaussian is not seen in this view
         weights[:,0] = w
     return weights                                                      # shape: [N_Gaussian, 1]
+
+def get_weights_by_single_view_with_mask(gaussians, viewpoint, pipe, background, obj_mask, unseen_value=-1, threshold=5):
+    with torch.no_grad():
+        weights = torch.zeros((gaussians.get_opacity.shape[0], 1), dtype=torch.int).cuda()
+        w = trace(viewpoint, gaussians, obj_mask, pipe, background)                              # shape: [N_Gaussian, N_ID], represent each gaussian trace result in this view
+        torch.cuda.synchronize()
+        
+        unseen_mask = (w.sum(-1) < threshold)
+        w = torch.argmax(w, dim=-1)
+        w[unseen_mask] = unseen_value                                   # this gaussian is not seen in this view
+        weights[:,0] = w
+    return weights                                                      # shape: [N_Gaussian, 1]

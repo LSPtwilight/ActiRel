@@ -11,6 +11,7 @@ from See3D_modules.mv_diffusion import mvdream_diffusion_model
 from argparse import ArgumentParser
 import matplotlib.pyplot as plt
 
+import time
 
 class See3D(nn.Module):
     def __init__(
@@ -212,14 +213,16 @@ class See3D(nn.Module):
 if __name__ == "__main__":
 
     parser = ArgumentParser()
-    parser.add_argument('--source_imgs_dir', type=str)
+    parser.add_argument('--ref_imgs_dir', type=str)
     parser.add_argument('--warp_root_dir', type=str)
     parser.add_argument('--output_root_dir', type=str)
     args = parser.parse_args()
 
-    source_imgs_dir = args.source_imgs_dir
+    source_imgs_dir = args.ref_imgs_dir
     warp_root_dir = args.warp_root_dir
     output_root_dir = args.output_root_dir
+
+    t1 = time.time()
 
     see3d = See3D(device='cuda')
     see3d.inpainting(source_imgs_dir=source_imgs_dir, warp_root_dir=warp_root_dir, output_root_dir=output_root_dir)
@@ -228,6 +231,7 @@ if __name__ == "__main__":
     cat_save_root_path = os.path.join(os.path.dirname(output_root_dir), 'cat_img')
     os.makedirs(cat_save_root_path, exist_ok=True)
     inpaint_img_list = os.listdir(output_root_dir)
+    inpaint_img_list = [img for img in inpaint_img_list if '.png' in img]
     img_num = len(inpaint_img_list)
     none_visible_rate_list = []
     for idx in range(img_num):
@@ -262,4 +266,7 @@ if __name__ == "__main__":
     plt.close()
 
     print(f'cat img saved in {cat_save_root_path}')
+
+    t2 = time.time()
+    print(f'Time cost: {t2 - t1:.2f}s')
     

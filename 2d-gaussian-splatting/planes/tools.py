@@ -36,8 +36,6 @@ def to_world_space(normals, c2w):
 
     return normals_world.reshape(shape)
 
-
-
 def remove_small_isolated_areas(img, min_size = 3000):
     f'''Remove the small isolated areas with size smaller than defined {min_size}
     '''

@@ -12,6 +12,8 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.getcwd(), '2d-gaussian-splatting'))
+from scene.dataset_readers import load_see3d_cameras
 
 import gc
 import copy
@@ -22,6 +24,7 @@ from utils.sh_utils import SH2RGB
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
+from scene.gaussian_model import get_gaussian_normal, get_obj_gaussian_by_mask
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -37,6 +40,8 @@ from matcha.dm_scene.charts import (
     get_gaussian_parameters_from_charts_data,
     get_gaussian_parameters_from_pda_data,
     depths_to_points_parallel,
+    depth2normal_parallel,
+    normal2curv_parallel,
 )
 from matcha.dm_regularization.depth import compute_depth_order_loss
 from matcha.dm_utils.rendering import normal2curv
@@ -49,6 +54,12 @@ import matplotlib.pyplot as plt
 
 from PIL import Image
 import numpy as np
+import pickle
+from gaussian_renderer.trace import get_weights_by_single_view_with_mask
+import trimesh
+import cv2
+import open3d as o3d
+from utils.graphics_utils import BasicPointCloud
 
 # Old confidence to increasing weight function
 # def confidence_to_weight(confidence:torch.Tensor):
@@ -81,6 +92,15 @@ def training(
     
     # Sparse data
     scene = Scene(dataset, gaussians, shuffle=False)
+
+    # NOTE: hard code for See3D root path
+    see3d_root_path = os.path.join(dataset.source_path, 'see3d_render')
+    see3d_cam_path = os.path.join(see3d_root_path, 'see3d_cameras.npz')
+    inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images')
+    if os.path.exists(see3d_cam_path):
+        see3d_gs_cameras_list, _ = load_see3d_cameras(see3d_cam_path, inpaint_root_dir)
+    else:
+        see3d_gs_cameras_list = []
     
     # Dense data
     if dense_data_path is not None:
@@ -119,76 +139,65 @@ def training(
     print("[WARNING] Confidence values are not being subtracted by 1.0 as in the original implementation.")
     print("Minimum confidence: ", charts_data['confs'].min())
     print("Maximum confidence: ", charts_data['confs'].max())
-    create_gaussians_from_charts_data = True
+    # create_gaussians_from_charts_data = True
 
+    create_gaussians_from_charts_data = False
     create_gaussians_from_pda_depth = True          # pda: prior depth anything
     print(f'WARNING: PDA depth root path: {refine_depth_path}')
     pda_depths = []
-    for idx in range(len(scene.getTrainCameras())):
+    pda_points_list = []
+    pda_points_colors_list = []
+
+    input_view_num = len(scene.getTrainCameras())
+    see3d_view_num = len(see3d_gs_cameras_list)
+    training_view_num = input_view_num + see3d_view_num
+    for idx in range(training_view_num):
         pda_depth_path = os.path.join(refine_depth_path, f'refine_depth_frame{idx:06d}.tiff')
         pda_depth = Image.open(pda_depth_path)
         pda_depth = np.array(pda_depth)
         pda_depth = torch.from_numpy(pda_depth).cuda()
         pda_depths.append(pda_depth)
-    pda_depths = torch.stack(pda_depths, dim=0).cuda()
 
-    if create_gaussians_from_charts_data:    
-        
-        if create_gaussians_from_pda_depth:
-            _images = [cam.original_image.cuda().permute(1, 2, 0) for cam in scene.getTrainCameras()]
-            pda_points = depths_to_points_parallel(pda_depths, scene.getTrainCameras())
-            N, H, W = pda_depths.shape
-            pda_points = pda_points.reshape(N, H, W, 3)
-            gaussian_params = get_gaussian_parameters_from_pda_data(
-                pda_points=pda_points,
-                images=_images,
-                conf_th=-1.,  # TODO: Try higher values
-                ratio_th=5.,
-                normal_scale=1e-10,
-                normalized_scales=0.5,
-            )
-        else:
-            h_charts, w_charts = charts_data['pts'].shape[-3:-1]
-            _images = [
-                torch.nn.functional.interpolate(cam.original_image[None].cuda(), (h_charts, w_charts), mode="bilinear", antialias=True)[0].permute(1, 2, 0)
-                for cam in scene.getTrainCameras()
-            ]
-            gaussian_params = get_gaussian_parameters_from_charts_data(
-                charts_data=charts_data, 
-                images=_images, 
-                conf_th=-1.,  # TODO: Try higher values
-                ratio_th=5.,
-                normal_scale=1e-10,
-                normalized_scales=0.5,
-            )
-        
-        n_max_gaussians = -1
-        if n_max_gaussians > -1 and n_max_gaussians < len(gaussian_params['means']):
-            print(f"Downsampling {len(gaussian_params['means'])} gaussians to {n_max_gaussians}...")
-            downsample_factor = len(gaussian_params['means']) / n_max_gaussians
-            sample_idx = torch.randperm(len(gaussian_params['means']))[:n_max_gaussians]
-        else:
-            print(f"Using all {len(gaussian_params['means'])} gaussians...")
-            downsample_factor = 1.0
-            sample_idx = torch.arange(len(gaussian_params['means']))
-        
-        _means = gaussian_params['means'][sample_idx]
-        _scales = gaussian_params['scales'][..., :2][sample_idx] * downsample_factor
-        _quaternions = gaussian_params['quaternions'][sample_idx]
-        _colors = gaussian_params['colors'][sample_idx]
-        if use_dense_supervision:
-            with torch.no_grad():
-                _means = torch.cat([_means, dense_gaussians.get_xyz.detach()], dim=0)
-                _scales = torch.cat([_scales, dense_gaussians.get_scaling.detach()], dim=0)
-                _quaternions = torch.cat([_quaternions, dense_gaussians.get_rotation.detach()], dim=0)
-                _colors = torch.cat([_colors, SH2RGB(dense_gaussians._features_dc.detach()[:, 0])], dim=0)
-        gaussians.create_from_parameters(_means, _scales, _quaternions, _colors, gaussians.spatial_lr_scale)
-        print("[INFO] Gaussians created from charts data.")
-    
+        pda_point_path = os.path.join(refine_depth_path, f'refine_points_frame{idx:06d}.ply')
+        pda_point = trimesh.load(pda_point_path)
+        pda_point = np.array(pda_point.vertices)
+        pda_points_list.append(pda_point)
+
+        pda_point_colors_path = os.path.join(refine_depth_path, f'rgb_frame{idx:06d}.png')
+        pda_point_colors = cv2.imread(pda_point_colors_path)
+        pda_point_colors = cv2.cvtColor(pda_point_colors, cv2.COLOR_BGR2RGB)
+        pda_point_colors = pda_point_colors / 255.0
+        pda_point_colors = pda_point_colors.astype(np.float32)
+        pda_point_colors = pda_point_colors.reshape(-1, 3)
+        pda_points_colors_list.append(pda_point_colors)
+
+    # pda_depths = torch.stack(pda_depths, dim=0).cuda()            # See3D depth shape is not similar to input views
+
+    if create_gaussians_from_pda_depth:
+        all_pda_points = np.concatenate(pda_points_list, axis=0)
+        all_pda_points_colors = np.concatenate(pda_points_colors_list, axis=0)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(all_pda_points)
+        pcd.colors = o3d.utility.Vector3dVector(all_pda_points_colors)
+
+        voxel_size = 0.02
+        downsampled_pcd = pcd.voxel_down_sample(voxel_size)
+        downsampled_points = np.asarray(downsampled_pcd.points)
+        downsampled_colors = np.asarray(downsampled_pcd.colors)
+        pseudo_normals = np.ones_like(downsampled_points)
+        init_pcd = BasicPointCloud(points=downsampled_points, colors=downsampled_colors, normals=pseudo_normals)
+        gaussians.create_from_pcd(init_pcd, gaussians.spatial_lr_scale)
+        print("[INFO] Gaussians created from init points.")
+
+        del init_pcd, downsampled_pcd, downsampled_points, downsampled_colors
+
+    else:
+        raise NotImplementedError("Not implemented")
+
     # Delete unused variables
     if use_dense_supervision:
         del dense_gaussians, dense_scene
-    del _means, _scales, _quaternions, _colors, gaussian_params, sample_idx
+
     gc.collect()
     torch.cuda.empty_cache()
     
@@ -214,18 +223,12 @@ def training(
     ema_prior_curvature_for_log = 0.0
     ema_prior_anisotropy_for_log = 0.0
     
-    viewpoint_cams = scene.getTrainCameras()
-    
-    # Set mip filter
-    if use_mip_filter:
-        print("[INFO] Using mip filter during training.")
-        gaussians.set_mip_filter(use_mip_filter)
-        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else viewpoint_cams)
+    input_cams = scene.getTrainCameras()
     
     # ===================================================================================
     # Build priors from charts data
     print("[INFO] Building priors from charts data...")
-    charts_priors = build_priors_from_charts_data(charts_data, viewpoint_cams)
+    charts_priors = build_priors_from_charts_data(charts_data, input_cams)
     charts_scale_factor = charts_priors['scale_factor']
     charts_prior_depths = charts_priors['prior_depths']
     charts_depths = charts_priors['depths']
@@ -234,10 +237,48 @@ def training(
     charts_curvs = charts_priors['curvs']
     print("[INFO] Charts priors built.")
 
+    refine_charts_depth = pda_depths[:input_view_num]
+    refine_charts_depth = torch.stack(refine_charts_depth, dim=0).cuda()
+    if see3d_view_num > 0:
+        see3d_refine_depths = pda_depths[input_view_num:]
+        see3d_refine_depths = torch.stack(see3d_refine_depths, dim=0).cuda()        # [n_views, h, w]
+        see3d_pseudo_confs = torch.ones_like(see3d_refine_depths) * 1.5             # NOTE: hard code 1.5 as in the original implementation
+        see3d_world_view_transforms = torch.stack([see3d_gs_cameras_list[i].world_view_transform for i in range(len(see3d_gs_cameras_list))])
+        see3d_full_proj_transforms = torch.stack([see3d_gs_cameras_list[i].full_proj_transform for i in range(len(see3d_gs_cameras_list))])
+        see3d_prior_normals = depth2normal_parallel(
+            see3d_refine_depths, 
+            world_view_transforms=see3d_world_view_transforms, 
+            full_proj_transforms=see3d_full_proj_transforms
+        ).permute(0, 3, 1, 2)  # Shape (n_charts, 3, h ,w)
+        see3d_prior_curvs = normal2curv_parallel(see3d_prior_normals, torch.ones_like(see3d_prior_normals[:, 0:1]))
+        print('See3D pointmap loaded!')
+
     if create_gaussians_from_pda_depth:
-        charts_depths = pda_depths.unsqueeze(1)
+        charts_depths = refine_charts_depth.unsqueeze(1)
         print(f'WARNING: Charts depths are now PDA depths.')
     
+    # cat input views and see3d views as total training views
+    if see3d_view_num > 0:
+        total_views_list = input_cams + see3d_gs_cameras_list
+        total_confs_list = [charts_confs[idx] for idx in range(len(charts_confs))] + [see3d_pseudo_confs[idx].unsqueeze(0) for idx in range(len(see3d_pseudo_confs))]
+        total_depths_list = [charts_depths[idx] for idx in range(len(charts_depths))] + [see3d_refine_depths[idx].unsqueeze(0) for idx in range(len(see3d_refine_depths))]
+        total_normals_list = [charts_normals[idx] for idx in range(len(charts_normals))] + [see3d_prior_normals[idx] for idx in range(len(see3d_prior_normals))]
+        total_curvs_list = [charts_curvs[idx] for idx in range(len(charts_curvs))] + [see3d_prior_curvs[idx] for idx in range(len(see3d_prior_curvs))]
+    else:
+        total_views_list = input_cams
+        total_confs_list = [charts_confs[idx] for idx in range(len(charts_confs))]
+        total_depths_list = [charts_depths[idx] for idx in range(len(charts_depths))]
+        total_normals_list = [charts_normals[idx] for idx in range(len(charts_normals))]
+        total_curvs_list = [charts_curvs[idx] for idx in range(len(charts_curvs))]
+
+    print(f"[INFO] Total number of views: {len(total_views_list)}, input views: {len(input_cams)}, see3d views: {len(see3d_gs_cameras_list)}")
+
+    # Set mip filter
+    if use_mip_filter:
+        print("[INFO] Using mip filter during training.")
+        gaussians.set_mip_filter(use_mip_filter)
+        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
+
     if use_dense_supervision:
         print("[INFO] Building depth priors from dense data...")
         # TODO: Build priors from dense data
@@ -282,17 +323,11 @@ def training(
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera index
-        if iteration % use_chart_view_every_n_iter == 0:
-            if not viewpoint_idx_stack:
-                viewpoint_idx_stack = list(range(len(viewpoint_cams)))
-            viewpoint_idx = viewpoint_idx_stack.pop(randint(0, len(viewpoint_idx_stack)-1))
-            viewpoint_cam = viewpoint_cams[viewpoint_idx]
-        else:
-            if not dense_viewpoint_idx_stack:
-                dense_viewpoint_idx_stack = list(range(len(dense_viewpoint_cams)))
-            viewpoint_idx = dense_viewpoint_idx_stack.pop(randint(0, len(dense_viewpoint_idx_stack)-1))
-            viewpoint_cam = dense_viewpoint_cams[viewpoint_idx]
+        # Pick a random view for this iteration
+        if not viewpoint_idx_stack or len(viewpoint_idx_stack) == 0:
+            viewpoint_idx_stack = list(range(len(total_views_list)))
+        viewpoint_idx = viewpoint_idx_stack.pop(randint(0, len(viewpoint_idx_stack)-1))
+        viewpoint_cam = total_views_list[viewpoint_idx]
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -316,12 +351,20 @@ def training(
         total_loss = loss + dist_loss + normal_loss
         
         # ===================================================================================
+
+        # Get the correct confidence, depth, normal, and curvature for the current view
+        current_conf = total_confs_list[viewpoint_idx]
+        current_depth = total_depths_list[viewpoint_idx]
+        current_normal = total_normals_list[viewpoint_idx]
+        current_curv = total_curvs_list[viewpoint_idx]
+
         surf_depth = render_pkg['surf_depth']
         total_regularization_loss = 0.
         lambda_anisotropy = 0.1  # 0.01 works well for depth_ratio = 0.
         anisotropy_max_ratio = 5.
         
-        if iteration % use_chart_view_every_n_iter == 0:
+        # if iteration % use_chart_view_every_n_iter == 0:
+        if True:
             rend_curvature = normal2curv(render_pkg['rend_normal'], torch.ones_like(render_pkg['rend_normal'][0:1]))
             
             # ---Charts regularization---
@@ -365,22 +408,22 @@ def training(
             else:  # Old (should be used with depth_ratio = 0. or 0.5)
                 # Depth regularization
                 depth_prior_loss = lambda_prior_depth * (
-                    confidence_weighting * charts_confs[viewpoint_idx] *  # (1, h, w)
-                    torch.log(1. + charts_scale_factor * (charts_depths[viewpoint_idx] - surf_depth).abs())
+                    confidence_weighting * current_conf *  # (1, h, w)
+                    torch.log(1. + charts_scale_factor * (current_depth - surf_depth).abs())
                     # (charts_scale_factor * (charts_depths[viewpoint_idx] - surf_depth).abs())
                 ).mean()
                 if lambda_prior_depth_derivative > 0:
                     depth_prior_loss += (
                         lambda_prior_depth_derivative 
-                        * torch.exp(-(charts_confs[viewpoint_idx] - 1.) ** 2 / 2.)
-                        * (1. - (surf_normal * charts_normals[viewpoint_idx]).sum(dim=0))
+                        * torch.exp(-(current_conf - 1.) ** 2 / 2.)
+                        * (1. - (surf_normal * current_normal).sum(dim=0))
                     ).mean()
-            
+
             # Normal regularization
-            normal_prior_loss = lambda_prior_normal * (1. - (rend_normal * charts_normals[viewpoint_idx]).sum(dim=0)).mean()
+            normal_prior_loss = lambda_prior_normal * (1. - (rend_normal * current_normal).sum(dim=0)).mean()
             
             # Curvature regularization
-            curv_prior_loss = lambda_prior_curvature * (charts_curvs[viewpoint_idx] - rend_curvature).abs().mean()
+            curv_prior_loss = lambda_prior_curvature * (current_curv - rend_curvature).abs().mean()
             # TODO: Should the curvature be applied to the surf normal?
             
             # Depth order regularization
@@ -402,7 +445,8 @@ def training(
                     lambda_depth_order = 0.001
                     
                 # Compute depth prior loss
-                order_supervision_depth = charts_prior_depths[viewpoint_idx].to(surf_depth.device)
+                # order_supervision_depth = charts_prior_depths[viewpoint_idx].to(surf_depth.device)
+                order_supervision_depth = total_depths_list[viewpoint_idx].to(surf_depth.device)
                 if lambda_depth_order > 0:
                     depth_order_prior_loss = lambda_depth_order * compute_depth_order_loss(
                         depth=surf_depth, 
@@ -508,7 +552,7 @@ def training(
                 - anisotropy_max_ratio
             ).mean()
             total_regularization_loss = total_regularization_loss + anisotropy_loss
-        
+
         total_loss = total_loss + total_regularization_loss
         
         # ===================================================================================
@@ -528,7 +572,6 @@ def training(
             if lambda_anisotropy > 0.:
                 ema_prior_anisotropy_for_log = 0.4 * anisotropy_loss.item() + 0.6 * ema_prior_anisotropy_for_log
 
-
             if iteration % 10 == 0:
 
                 current_points = len(gaussians.get_xyz.detach())
@@ -542,7 +585,7 @@ def training(
                     "Points": f"{len(gaussians.get_xyz.detach())}",
                     "p_depth": f"{ema_prior_depth_for_log:.{5}f}",
                     "p_normal": f"{ema_prior_normal_for_log:.{5}f}",
-                    "p_curvature": f"{ema_prior_curvature_for_log:.{5}f}"
+                    "pc": f"{ema_prior_curvature_for_log:.{5}f}",
                 }
                 if lambda_anisotropy > 0:
                     loss_dict["aniso"] = f"{ema_prior_anisotropy_for_log:.{5}f}"
@@ -552,9 +595,10 @@ def training(
                 
             if (iteration % save_log_images_every_n_iter == 0) or (iteration == 1):
                 # Save log image with rgb, depth, normal, curvature
-                if iteration % use_chart_view_every_n_iter == 0:
-                    supervision_depth = charts_depths[viewpoint_idx]
-                    supervision_normal = charts_normals[viewpoint_idx]
+                # if iteration % use_chart_view_every_n_iter == 0:
+                if True:
+                    supervision_depth = total_depths_list[viewpoint_idx]
+                    supervision_normal = total_normals_list[viewpoint_idx]
                 else:
                     supervision_depth = dense_supervision_depth.squeeze().unsqueeze(0)
                     supervision_normal = torch.zeros_like(charts_normals[0])
@@ -612,7 +656,7 @@ def training(
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
                     if gaussians.use_mip_filter:
-                        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else viewpoint_cams)
+                        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
@@ -621,7 +665,7 @@ def training(
                 if iteration < opt.iterations - 100:  # don't update in the end of training
                     torch.cuda.empty_cache()
                     if gaussians.use_mip_filter:
-                        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else viewpoint_cams)
+                        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
 
             # Optimizer step
             if iteration < opt.iterations:

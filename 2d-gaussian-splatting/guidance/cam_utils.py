@@ -9,6 +9,7 @@ import torch
 import random
 
 from utils.graphics_utils import getProjectionMatrix
+from matcha.dm_scene.charts import project_points, transform_points_world_to_view
 
 def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))
@@ -104,16 +105,19 @@ def interpolate_camera_path(poses, num_views, add_random_trans=False):
     return new_poses
 
 def generate_random_perturbed_camera_poses(
-    gs_camera,
+    gs_cameras,
+    visibility_grid,
     n_poses=10,
     position_std=0.05,
-    rotation_std=0.03
+    rotation_std=0.03,
+    width=512, height=512, fovy_deg=60, fovx_deg=None
 ):
     """
     Generate N camera poses with small perturbations around a given camera pose (NumPy version).
     
     Args:
-        gs_camera: gs camera views
+        gs_cameras: gs camera views
+        visibility_grid: visibility grid
         n_poses: Number of perturbed poses to generate
         position_std: Standard deviation for position perturbation (in same units as camera)
         rotation_std: Standard deviation for rotation perturbation (in radians)
@@ -121,48 +125,59 @@ def generate_random_perturbed_camera_poses(
     Returns:
         perturbed_poses: List of N perturbed camera poses
     """
-    # Extract rotation and translation from original pose
-    R = gs_camera.R             # c2w R
-    temp_T = gs_camera.T        # w2c T
-    T = -np.matmul(R, temp_T)   # c2w T
-    
-    # Convert rotation matrix to scipy rotation object
-    rot = Rotation.from_matrix(R)
-    
     # Initialize lists to store perturbed poses
     perturbed_poses = []
-    
-    for i in range(n_poses):
-        # 1. Perturb camera position
-        # Add Gaussian noise to position
-        pos_noise = np.random.normal(0, position_std, size=3)
-        perturbed_T = T + pos_noise
+    device = visibility_grid.device
+
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy
+
+    for gs_camera in gs_cameras:
+
+        # Extract rotation and translation from original pose
+        R = gs_camera.R             # c2w R
+        temp_T = gs_camera.T        # w2c T
+        T = -np.matmul(R, temp_T)   # c2w T
         
-        # 2. Perturb camera rotation
-        # Create small random rotation using axis-angle representation
-        random_axis = np.random.normal(0, 1, size=3)
-        random_axis = random_axis / np.linalg.norm(random_axis)  # normalize to unit vector
-        random_angle = np.random.normal(0, rotation_std)
+        # Convert rotation matrix to scipy rotation object
+        rot = Rotation.from_matrix(R)
         
-        # Create small rotation
-        small_rot = Rotation.from_rotvec(random_axis * random_angle)
-        
-        # Apply small rotation to original rotation
-        perturbed_rot = small_rot * rot
-        
-        # Get rotation matrix
-        perturbed_R = perturbed_rot.as_matrix()
-        
-        # Create perturbed camera pose
-        perturbed_pose = np.eye(4)
-        perturbed_pose[:3, :3] = perturbed_R
-        perturbed_pose[:3, 3] = perturbed_T
-        perturbed_poses.append(perturbed_pose.astype(np.float32))
+        for i in range(n_poses):
+            # 1. Perturb camera position
+            # Add Gaussian noise to position
+            found = False
+            while not found:
+                pos_noise = np.random.normal(0, position_std, size=3)
+                perturbed_T = T + pos_noise
+                valid_mask = visibility_grid.check_valid_camera_center(torch.from_numpy(perturbed_T).unsqueeze(0).to(device))
+                if valid_mask.sum() > 0:
+                    found = True
+            
+            # 2. Perturb camera rotation
+            # Create small random rotation using axis-angle representation
+            random_axis = np.random.normal(0, 1, size=3)
+            random_axis = random_axis / np.linalg.norm(random_axis)  # normalize to unit vector
+            random_angle = np.random.normal(0, rotation_std)
+            
+            # Create small rotation
+            small_rot = Rotation.from_rotvec(random_axis * random_angle)
+            
+            # Apply small rotation to original rotation
+            perturbed_rot = small_rot * rot
+            
+            # Get rotation matrix
+            perturbed_R = perturbed_rot.as_matrix()
+            
+            # Create perturbed camera pose
+            perturbed_pose = np.eye(4)
+            perturbed_pose[:3, :3] = perturbed_R
+            perturbed_pose[:3, 3] = perturbed_T
+            perturbed_poses.append(perturbed_pose.astype(np.float32))
 
     # generate camera
     cur_cams = []
     for idx in range(len(perturbed_poses)):
-        cur_cam = MiniCam(perturbed_poses[idx], gs_camera.image_width, gs_camera.image_height, gs_camera.FoVy, gs_camera.FoVx)
+        cur_cam = MiniCam(perturbed_poses[idx], width, height, fovy=fovy, fovx=fovx)
         cur_cams.append(cur_cam)
     
     return perturbed_poses, cur_cams
@@ -480,7 +495,7 @@ def generate_see3d_camera(input_c2ws, interpolate_num=10, camera_type='ellipse',
 
     return random_poses, cur_cams
 
-def generate_see3d_camera_by_lookat(train_cams, train_depths, train_view_points, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, train_view_points, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
 
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
         """Construct lookat view matrix."""
@@ -522,7 +537,7 @@ def generate_see3d_camera_by_lookat(train_cams, train_depths, train_view_points,
 
     # check valid novel camera center
     novel_cam_centers = torch.tensor(novel_cam_centers, dtype=torch.float32, device=device)
-    valid_mask = check_valid_camera_center(train_cams, train_depths, novel_cam_centers)
+    valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
     novel_cam_centers = novel_cam_centers[valid_mask]
 
     # get lookat points
@@ -548,7 +563,7 @@ def generate_see3d_camera_by_lookat(train_cams, train_depths, train_view_points,
 
     return new_poses, cur_cams
 
-def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, select_num=10):
+def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, select_num=10, none_visible_rate_low_bound=0.05, none_visible_rate_high_bound=0.5, covisible_rate_high_bound=0.8):
     """
     Select views that need inpainting
     
@@ -557,13 +572,13 @@ def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, selec
         gs_none_visible_rate: list of float, none visible rate of each view
         gaussians: GaussianModel object
         select_num: int, number of views to select
+        none_visible_rate_low_bound: float, lower bound of none visible rate
+        none_visible_rate_high_bound: float, upper bound of none visible rate
+        covisible_rate_high_bound: float, upper bound of co-visibility rate
         
     Returns:
         selected_view_ids: list of int, ids of selected views
     """
-    none_visible_rate_low_bound = 0.05
-    none_visible_rate_high_bound = 0.5
-    covisible_rate_high_bound = 0.8
 
     # Create pairs of (view_id, none_visible_rate)
     view_rates = [(i, rate) for i, rate in enumerate(gs_none_visible_rate)]
@@ -646,13 +661,14 @@ def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, selec
     # print(f"Selected {len(selected_view_ids)} views for inpainting")
     return selected_view_ids
 
-def generate_see3d_camera_by_lookat_object_centric(train_cams, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
     """
     Select views that need inpainting
     For object-centric scenes, e.g. Mip-NeRF 360, CO3D
     
     Args:
         train_cams: list of GSCamera objects
+        visibility_grid: VisibilityGrid object
         traj_center: torch.Tensor, [3], center of the object
         n_frames: int, number of views to generate
         width: int, width of the image
@@ -707,7 +723,9 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, traj_center=None,
     max_z = train_cam_centers[:, 2].max()
     novel_cam_centers[:, 2] = max_z
     
-    # NOTE: temp not check valid camera center, because the range is almost valid for object-centric scenes
+    # check valid camera center
+    valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+    novel_cam_centers = novel_cam_centers[valid_mask]
 
     # NOTE: hard code lookat points as traj_center
     lookat_points = torch.zeros_like(novel_cam_centers) + traj_center
@@ -719,6 +737,153 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, traj_center=None,
     novel_cam_centers = novel_cam_centers.cpu().numpy()
     lookat_points = lookat_points.cpu().numpy()
     
+    # NOTE: hard code up vector for colmap coords
+    up = np.array([0, 0, -1])
+    new_poses = np.stack([viewmatrix(p - lookat, up, p) for p, lookat in zip(novel_cam_centers, lookat_points)])
+
+    homogeneous_row = np.zeros((len(new_poses), 1, 4))
+    homogeneous_row[:, 0, 3] = 1
+    new_poses = np.concatenate([new_poses, homogeneous_row], axis=1)
+
+    # generate camera
+    cur_cams = []
+    for idx in range(len(new_poses)):
+        c2w = new_poses[idx].astype(np.float32)
+        cur_cam = MiniCam(c2w, width, height, fovy=fovy, fovx=fovx)
+        cur_cams.append(cur_cam)
+
+    return new_poses, cur_cams
+
+# add random sample cameras in not covered area
+def generate_random_sample_cameras(selected_cams, visibility_grid, train_cams, max_side_res=5, min_side_res=3, width=512, height=512, fovy_deg=60, fovx_deg=None):
+    """
+    Generate random sample cameras in not covered area.
+
+    Args:
+        selected_cams: List of selected camera objects
+        visibility_grid: VisibilityGrid object
+        train_cams: List of train view points
+        max_side_res: Maximum grid resolution for the longer side
+        min_side_res: Minimum grid resolution for the shorter side
+        width, height: Image size for new cameras
+        fovy_deg, fovx_deg: Field of view for new cameras
+
+    Returns:
+        new_poses: torch.Tensor, [n_frames, 4, 4], new poses
+        cur_cams: list of GSCamera objects, new cameras
+    """
+
+    def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+        """Construct lookat view matrix."""
+        vec2 = safe_normalize(-lookdir)
+        vec1 = safe_normalize(up)
+        vec0 = safe_normalize(np.cross(vec1, vec2))
+        vec1 = safe_normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, position], axis=1)
+        return m
+
+    # get fovy and fovx
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    x_min, y_min, _, x_max, y_max, _ = visibility_grid.get_visible_boundary()
+
+    train_cam_centers = torch.stack([cam.camera_center for cam in train_cams], dim=0)
+    device = train_cam_centers.device
+    z_min, z_max = train_cam_centers[:, 2].min(), train_cam_centers[:, 2].max()
+
+    x_min, y_min, z_min = x_min.item(), y_min.item(), z_min.item()
+    x_max, y_max, z_max = x_max.item(), y_max.item(), z_max.item()
+
+    traj_center = torch.tensor([(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2], device=device)
+
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+
+    # Determine grid resolution for x and y based on their range
+    if x_range > y_range:
+        x_res, y_res = max_side_res, min_side_res
+    else:
+        x_res, y_res = min_side_res, max_side_res
+    z_res = 1  # Only divide in x and y, not z
+
+    # Get selected camera centers
+    selected_cam_centers = torch.stack([cam.camera_center for cam in selected_cams], dim=0)
+    selected_cam_centers = selected_cam_centers.to(device)
+
+    # Compute grid edges
+    x_edges = torch.linspace(x_min, x_max, x_res + 1)
+    y_edges = torch.linspace(y_min, y_max, y_res + 1)
+    z_edges = torch.linspace(z_min, z_max, z_res + 1)
+
+    new_cam_centers = []
+
+    # Iterate over all grid cells
+    for xi in range(x_res):
+        for yi in range(y_res):
+            for zi in range(z_res):
+                # Compute the bounds of the current cell
+                cell_min = torch.tensor([x_edges[xi], y_edges[yi], z_edges[zi]])
+                cell_max = torch.tensor([x_edges[xi+1], y_edges[yi+1], z_edges[zi+1]])
+
+                # Check if any selected camera center falls into this cell
+                in_cell_mask = (
+                    (selected_cam_centers[:, 0] >= cell_min[0]) & (selected_cam_centers[:, 0] < cell_max[0]) &
+                    (selected_cam_centers[:, 1] >= cell_min[1]) & (selected_cam_centers[:, 1] < cell_max[1]) &
+                    (selected_cam_centers[:, 2] >= cell_min[2]) & (selected_cam_centers[:, 2] < cell_max[2])
+                )
+                if in_cell_mask.any():
+                    continue  # This cell is already covered
+
+                ###### Find visible camera center in the cell
+                # Collect all candidate centers in priority order
+                candidate_centers = []
+                
+                # 1. Cell center (highest priority)
+                cell_center = (cell_min + cell_max) / 2
+                candidate_centers.append(cell_center)
+                
+                # 2. 8 subdivision centers (2x2x2)
+                i, j, k = torch.meshgrid(torch.arange(2), torch.arange(2), torch.arange(2), indexing='ij')
+                ijk_coords = torch.stack([i.flatten(), j.flatten(), k.flatten()], dim=1).float()  # [8, 3]
+                sub_min_8 = cell_min + ijk_coords * (cell_max - cell_min) / 2
+                sub_max_8 = cell_min + (ijk_coords + 1) * (cell_max - cell_min) / 2
+                sub_centers_8 = (sub_min_8 + sub_max_8) / 2
+                candidate_centers.extend(sub_centers_8)
+                
+                # 3. 27 subdivision centers (3x3x3)
+                i, j, k = torch.meshgrid(torch.arange(3), torch.arange(3), torch.arange(3), indexing='ij')
+                ijk_coords = torch.stack([i.flatten(), j.flatten(), k.flatten()], dim=1).float()  # [27, 3]
+                sub_min_27 = cell_min + ijk_coords * (cell_max - cell_min) / 3
+                sub_max_27 = cell_min + (ijk_coords + 1) * (cell_max - cell_min) / 3
+                sub_centers_27 = (sub_min_27 + sub_max_27) / 2
+                candidate_centers.extend(sub_centers_27)
+                
+                # Convert to tensor and check all candidates at once
+                candidate_centers = torch.stack(candidate_centers).to(device)
+                visibility_mask = visibility_grid.check_valid_camera_center(candidate_centers)
+
+                # NOTE: check candidate centers not too close with traj_center
+                dist = torch.norm(candidate_centers - traj_center, dim=-1)
+                valid_mask = dist > 0.01
+                visibility_mask = visibility_mask & valid_mask
+                
+                # Find the first visible center (highest priority)
+                visible_indices = torch.nonzero(visibility_mask).squeeze(-1)
+                if len(visible_indices) > 0:
+                    first_visible_idx = visible_indices[0]
+                    new_cam_centers.append(candidate_centers[first_visible_idx])
+
+    if len(new_cam_centers) == 0:
+        print("No new visible camera centers found in uncovered regions.")
+        return None, None
+
+    novel_cam_centers = torch.stack(new_cam_centers, dim=0)
+    lookat_points = torch.zeros_like(novel_cam_centers) + traj_center
+
+    novel_cam_centers = novel_cam_centers.cpu().numpy()
+    lookat_points = lookat_points.cpu().numpy()
+
     # NOTE: hard code up vector for colmap coords
     up = np.array([0, 0, -1])
     new_poses = np.stack([viewmatrix(p - lookat, up, p) for p, lookat in zip(novel_cam_centers, lookat_points)])
@@ -819,21 +984,41 @@ def covisibility_check_by_gs(camera1, camera2, gaussians):
         float: The maximum co-visibility ratio
     """
     # Get Gaussian point visibility from camera1
-    visible_points1 = get_visible_points(camera1, gaussians)
+    visible_points1_mask = get_visible_points_mask(camera1, gaussians.get_xyz)
     
     # Get Gaussian point visibility from camera2
-    visible_points2 = get_visible_points(camera2, gaussians)
+    visible_points2_mask = get_visible_points_mask(camera2, gaussians.get_xyz)
     
     # Calculate the number of points visible from both cameras
-    common_visible = torch.logical_and(visible_points1, visible_points2).sum().item()
+    common_visible = torch.logical_and(visible_points1_mask, visible_points2_mask).sum().item()
     
     # Calculate visibility ratios
-    ratio1 = common_visible / visible_points1.sum().item() if visible_points1.sum().item() > 0 else 0
-    ratio2 = common_visible / visible_points2.sum().item() if visible_points2.sum().item() > 0 else 0
+    ratio1 = common_visible / visible_points1_mask.sum().item() if visible_points1_mask.sum().item() > 0 else 0
+    ratio2 = common_visible / visible_points2_mask.sum().item() if visible_points2_mask.sum().item() > 0 else 0
     
     # Take the larger ratio, if it exceeds the threshold, consider the cameras to have co-visibility
     max_ratio = max(ratio1, ratio2)
     return max_ratio
+
+def get_covisible_points(camera1, camera2, points):
+    """
+    Get points that are visible from both cameras
+    
+    Args:
+        camera1, camera2: Two GSCamera objects
+        points: torch.Tensor, [N, 3], points in world coordinate
+        
+    Returns:
+        visible_points: torch.Tensor, [N], boolean mask indicating which points are visible from both cameras
+    """
+
+    visible_points1_mask = get_visible_points_mask(camera1, points)
+    visible_points2_mask = get_visible_points_mask(camera2, points)
+
+    visible_points_mask = torch.logical_and(visible_points1_mask, visible_points2_mask)
+    visible_points = points[visible_points_mask]
+
+    return visible_points
 
 def project_points_to_image(camera, points):
     """
@@ -884,20 +1069,134 @@ def project_points_to_image(camera, points):
 
     return points_depth, points_2d, in_image
 
-def get_visible_points(camera, gaussians):
+def get_pixel_to_points_tensor(camera, points, use_depth_threshold=False, depth_thresh = 0.01):
     """
-    Get Gaussian points visible from a camera viewpoint
+    Get pixel-to-points mapping using tensor operations (more efficient version)
+    
+    Args:
+        camera: GSCamera object
+        points: torch.Tensor, [N, 3], points in world coordinate
+        use_depth_threshold: bool, whether to use depth threshold to filter out points
+        
+    Returns:
+        pixel_map: torch.Tensor, [H, W, max_points_per_pixel], point IDs stored at each pixel position
+        valid_mask: torch.Tensor, [H, W, max_points_per_pixel], mask indicating valid point IDs
+    """
+    # Use existing function to get projection results
+    points_depth, points_2d, in_image = project_points_to_image(camera, points)
+    in_image = in_image & (points_depth > 0)
+    
+    H, W = camera.image_height, camera.image_width
+    device = points.device
+    
+    valid_indices = torch.nonzero(in_image).squeeze(-1)
+    valid_points_2d = points_2d[valid_indices]
+    
+    # Convert to integer pixel coordinates
+    pixel_coords = torch.round(valid_points_2d).int()
+    pixel_coords[:, 0] = torch.clamp(pixel_coords[:, 0], 0, W - 1)
+    pixel_coords[:, 1] = torch.clamp(pixel_coords[:, 1], 0, H - 1)
+    
+    # Calculate flattened pixel indices
+    pixel_indices = pixel_coords[:, 1] * W + pixel_coords[:, 0]
+    
+    # Sort by pixel indices to group points by pixel
+    sorted_pixel_indices, sort_order = torch.sort(pixel_indices)
+    sorted_valid_indices = valid_indices[sort_order]
+    
+    # Find unique pixel indices and their counts
+    unique_pixels, pixel_counts = torch.unique_consecutive(sorted_pixel_indices, return_counts=True)
+    max_points_per_pixel = pixel_counts.max().item()
+    
+    # Create output tensors
+    pixel_map = torch.zeros((H, W, max_points_per_pixel), dtype=torch.int, device=device)
+    
+    # Calculate within-pixel indices for each point using cumsum
+    # Create a mask for the start of each new pixel group
+    is_new_pixel = torch.ones_like(sorted_pixel_indices, dtype=torch.bool)
+    is_new_pixel[1:] = sorted_pixel_indices[1:] != sorted_pixel_indices[:-1]
+    
+    group_ids = torch.cumsum(is_new_pixel.int(), dim=0) - 1
+    start_indices = torch.nonzero(is_new_pixel).squeeze(-1)
+    group_start_positions = start_indices[group_ids]
+    within_pixel_indices = torch.arange(len(sorted_pixel_indices), device=device) - group_start_positions
+
+    # Convert flat pixel indices back to 2D coordinates
+    pixel_v = sorted_pixel_indices // W
+    pixel_u = sorted_pixel_indices % W
+    
+    # Filter out points that exceed max_points_per_pixel
+    valid_fill_mask = within_pixel_indices < max_points_per_pixel
+    if valid_fill_mask.any():
+        final_v = pixel_v[valid_fill_mask]
+        final_u = pixel_u[valid_fill_mask]
+        final_within_indices = within_pixel_indices[valid_fill_mask]
+        final_point_indices = sorted_valid_indices[valid_fill_mask]
+        
+        # Fill pixel_map and valid_mask in parallel
+        pixel_map[final_v, final_u, final_within_indices] = final_point_indices.int()
+
+    if use_depth_threshold:
+        temp_points_depth = points_depth.clone()
+        temp_points_depth[0] = points_depth.max() + 100.0                     # set the first point depth to a large value, as default point id is 0
+
+        pixel_map_flatten = pixel_map.reshape(-1)
+        pixel_pnts_depth_flatten = temp_points_depth[pixel_map_flatten]
+        pixel_pnts_depth_map = pixel_pnts_depth_flatten.reshape(H, W, max_points_per_pixel)
+        min_depth_map = pixel_pnts_depth_map.min(dim=-1).values                                 # [H, W]
+        min_depth_map[min_depth_map > points_depth.max()] = points_depth.max()                # avoid only 0 point idx
+
+        high_depth_map = min_depth_map + depth_thresh                                           # [H, W]
+        # copy high_depth_map to [H, W, max_points_per_pixel]
+        high_depth_map = high_depth_map.unsqueeze(-1).repeat(1, 1, max_points_per_pixel)
+
+        # filter out points that are behind the high_depth_map
+        valid_mask = pixel_pnts_depth_map < high_depth_map
+        valid_pnts_sum = valid_mask.sum(dim=-1)
+        max_valid_pnts_sum = valid_pnts_sum.max()
+        refine_pixel_map = torch.zeros(H, W, max_valid_pnts_sum, dtype=torch.int, device=device)
+
+        valid_coords = torch.nonzero(valid_mask)  # [num_valid_entries, 3] (h, w, point_idx)
+        if len(valid_coords) > 0:
+            h_coords = valid_coords[:, 0]
+            w_coords = valid_coords[:, 1]
+            point_slot_coords = valid_coords[:, 2]
+            valid_point_indices = pixel_map[h_coords, w_coords, point_slot_coords]
+
+            # get pos in refine_pixel_map
+            pixel_indices = h_coords * W + w_coords
+            sorted_indices = torch.argsort(pixel_indices)
+
+            sorted_pixel_indices = pixel_indices[sorted_indices]
+            sorted_h_coords = h_coords[sorted_indices]
+            sorted_w_coords = w_coords[sorted_indices]
+            sorted_point_indices = valid_point_indices[sorted_indices]
+
+            is_new_pixel = torch.ones_like(sorted_pixel_indices, dtype=torch.bool)
+            is_new_pixel[1:] = sorted_pixel_indices[1:] != sorted_pixel_indices[:-1]
+            
+            group_ids = torch.cumsum(is_new_pixel.int(), dim=0) - 1
+            start_indices = torch.nonzero(is_new_pixel).squeeze(-1)
+            group_start_positions = start_indices[group_ids]
+            within_pixel_offsets = torch.arange(len(sorted_pixel_indices), device=device) - group_start_positions
+
+            refine_pixel_map[sorted_h_coords, sorted_w_coords, within_pixel_offsets] = sorted_point_indices
+
+            return refine_pixel_map
+
+    return pixel_map
+
+def get_visible_points_mask(camera, points):
+    """
+    Get points visible from a camera viewpoint
     
     Args:
         camera: GSCamera object where camera.R is c2w rotation and camera.T is w2c translation
-        gaussians: GaussianModel object
+        points: torch.Tensor, [N, 3], points in world coordinate
         
     Returns:
         torch.Tensor: Boolean mask indicating which points are visible
     """
-    
-    # Get Gaussian point coordinates
-    points = gaussians.get_xyz
 
     points_depth, _, in_image = project_points_to_image(camera, points)
     
@@ -909,7 +1208,7 @@ def get_visible_points(camera, gaussians):
     
     return visible_mask
 
-def check_valid_camera_center(train_cams, train_depths, novel_cam_centers):
+def check_valid_camera_center_by_depth(train_cams, train_depths, novel_cam_centers):
     """
     Check if the novel camera center is visible from any of the training cameras
     
@@ -1057,6 +1356,80 @@ def build_visibility_masks(cameras, depths, points, mast3r_matching=None, depth_
         return visibility_times_masks
     else:
         return visibility_masks
+    
+def build_visibility_masks_2(tgt_cameras, tgt_depths, src_points, depth_threshold=0.1, least_num_views=1, return_origin_masks=False):
+    """
+    Build visibility masks for each viewpoint camera
+    
+    Args:
+        tgt_cameras: List of GSCamera objects representing target cameras
+        tgt_depths: List of torch.Tensor, [M, H, W], depths of points in camera coordinate
+        src_points: torch.Tensor, [K, N, 3], points in world coordinate
+        depth_threshold: float, depth threshold for visibility check
+        least_num_views: int, least number of views for visibility check
+        return_origin_masks: bool, whether to return the original times visibility masks
+
+    Returns:
+        visibility_masks: List of torch.Tensor, [M, H, W], boolean mask indicating which viewpoint camera centers are visible
+    """
+
+    src_view_num = src_points.shape[0]
+    tgt_view_num = len(tgt_cameras)
+
+    visibility_masks = []
+    visibility_times_masks = []
+    for i in range(tgt_view_num):
+        tgt_cam, tgt_depth = tgt_cameras[i], tgt_depths[i].squeeze(0)
+        H, W = tgt_depth.shape
+        tgt_visibility_mask = torch.zeros(H, W, device=tgt_depth.device)
+        
+        for j in range(src_view_num):
+            src_pnts = src_points[j]
+            src_pnts_depth, src_pnts_2d, src_pnts_in_image = project_points_to_image(tgt_cam, src_pnts)
+            if not torch.any(src_pnts_in_image):
+                continue
+            
+            # Create temporary visibility mask for this target view
+            temp_visibility_mask = torch.zeros_like(tgt_visibility_mask)
+
+            # Get valid points that are inside the target image
+            valid_indices = torch.nonzero(src_pnts_in_image).squeeze(-1)
+            valid_points_2d = src_pnts_2d[valid_indices]
+            valid_points_depth = src_pnts_depth[valid_indices]
+            
+            # Convert to integer coordinates and clamp to image boundaries
+            u = torch.clamp(valid_points_2d[:, 0].long(), 0, W-1)
+            v = torch.clamp(valid_points_2d[:, 1].long(), 0, H-1)
+            
+            # Get corresponding depths from the target depth map
+            depth_at_pixels = tgt_depth[v, u]
+            
+            # Check if depth difference is within threshold
+            depth_diff = torch.abs(valid_points_depth - depth_at_pixels)
+            relative_diff = depth_diff / (valid_points_depth + 1e-6)
+            depth_valid = relative_diff < depth_threshold
+            depth_valid = depth_valid & (valid_points_depth > 0)  # Avoid negative depth
+            
+            # Update temporary visibility mask for valid depth points
+            if torch.any(depth_valid):
+                valid_u = u[depth_valid]
+                valid_v = v[depth_valid]
+                temp_visibility_mask[valid_v, valid_u] = 1.0
+            
+            # Add to target visibility mask
+            tgt_visibility_mask += temp_visibility_mask
+        
+        # Store the visibility times mask (before thresholding)
+        visibility_times_masks.append(tgt_visibility_mask.float().unsqueeze(0))
+        
+        # Apply threshold to create final visibility mask
+        tgt_visibility_mask = (tgt_visibility_mask >= least_num_views).float().unsqueeze(0)  # [1, H, W]
+        visibility_masks.append(tgt_visibility_mask)
+
+    if return_origin_masks:
+        return visibility_times_masks
+    else:
+        return visibility_masks
 
 def farthest_point_sample(points, num_samples):
     """
@@ -1068,7 +1441,7 @@ def farthest_point_sample(points, num_samples):
         return points
         
     # Initialize with the first point
-    selected_indices = torch.zeros(num_samples, dtype=torch.long, device=points.device)
+    selected_indices = torch.zeros(num_samples, dtype=torch.int, device=points.device)
     # Distances to the selected points
     distances = torch.ones(num_points, device=points.device) * 1e10
     

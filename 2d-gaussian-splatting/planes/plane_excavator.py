@@ -15,8 +15,8 @@ from sklearn.cluster import KMeans
 import argparse
 from PIL import Image
 
-from planes.mask_generator import setup_sam, infer_masks
-from planes.tools import to_world_space, remove_small_isolated_areas, merge_normal_clusters
+from mask_generator import setup_sam, infer_masks
+from tools import to_world_space, remove_small_isolated_areas, merge_normal_clusters
 
 def normals_cluster(normals: np.ndarray, img_shape: tuple, n_init_clusters: int = 8, n_clusters: int = 6, min_size_ratio: float = 0.004):
     """
@@ -213,7 +213,7 @@ class PlaneExcavator:
             pred_norm_rgb = pred_norm_rgb.astype(np.uint8)
             img_batch["pred_norm"] = pred_norm_rgb
 
-            from planes.disp import overlay_masks
+            from disp import overlay_masks
             img_batch['sam_masks'] = overlay_masks(img, sam_outputs['masks'].cpu().numpy())
             img_batch["normal_mask"] = overlay_masks(img, normal_clusters)
             img_batch["plane_mask"] = overlay_masks(img, plane_instances)
@@ -226,11 +226,11 @@ class PlaneExcavator:
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--plane_root_path", type=str, required=True)
     parser.add_argument("--use_normal_estimator", action='store_true')
     args = parser.parse_args()
 
-    data_path = args.data_path
+    data_path = args.plane_root_path
     file_list = os.listdir(data_path)
     rgb_list = [file for file in file_list if file.endswith('.png') and 'rgb_frame' in file]
     rgb_list.sort()
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     img_height, img_width = temp_rgb.height, temp_rgb.width
     print(f'img_height: {img_height}, img_width: {img_width}')
 
-    normal_list = [file for file in file_list if file.endswith('.npy') and 'charts_mono_normal_frame' in file]      # normal from depth-anything-v2 (MAtCha use this as normal prior)
+    normal_list = [file for file in file_list if file.endswith('.npy') and 'mono_normal_frame' in file]      # normal from depth-anything-v2 (MAtCha use this as normal prior)
     normal_list.sort()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -269,11 +269,11 @@ if __name__ == "__main__":
         print(f'save to {npy_save_path}')
 
         # for visualization
-        normal_map = output['vis']['pred_norm']
-        save_path = os.path.join(data_path, f'plane_normal_map_frame{idx:06d}.png')
-        normal_rgb = Image.fromarray(normal_map)
-        normal_rgb.save(save_path)
-        print(f'save to {save_path}')
+        # normal_map = output['vis']['pred_norm']
+        # save_path = os.path.join(data_path, f'plane_normal_map_frame{idx:06d}.png')
+        # normal_rgb = Image.fromarray(normal_map)
+        # normal_rgb.save(save_path)
+        # print(f'save to {save_path}')
 
         vis_map = output['vis']['plane_mask']
         save_path = os.path.join(data_path, f'plane_vis_frame{idx:06d}.png')
@@ -281,18 +281,19 @@ if __name__ == "__main__":
         vis_img.save(save_path)
         print(f'save to {save_path}')
 
-        vis_sam_map = output['vis']['sam_masks']
-        save_path = os.path.join(data_path, f'plane_sam_vis_frame{idx:06d}.png')
-        vis_sam_img = Image.fromarray(vis_sam_map)
-        vis_sam_img.save(save_path)
-        print(f'save to {save_path}')
+        # vis_sam_map = output['vis']['sam_masks']
+        # save_path = os.path.join(data_path, f'plane_sam_vis_frame{idx:06d}.png')
+        # vis_sam_img = Image.fromarray(vis_sam_map)
+        # vis_sam_img.save(save_path)
+        # print(f'save to {save_path}')
 
-        vis_normal_mask_map = output['vis']['normal_mask']
-        save_path = os.path.join(data_path, f'plane_normal_mask_vis_frame{idx:06d}.png')
-        vis_normal_mask_img = Image.fromarray(vis_normal_mask_map)
-        vis_normal_mask_img.save(save_path)
-        print(f'save to {save_path}')
+        # vis_normal_mask_map = output['vis']['normal_mask']
+        # save_path = os.path.join(data_path, f'plane_normal_mask_vis_frame{idx:06d}.png')
+        # vis_normal_mask_img = Image.fromarray(vis_normal_mask_map)
+        # vis_normal_mask_img.save(save_path)
+        # print(f'save to {save_path}')
 
-        del output, plane_mask, vis_map, vis_sam_map, vis_normal_mask_map
+        # del output, plane_mask, vis_map, vis_sam_map, vis_normal_mask_map
+        del output, plane_mask, vis_map
         torch.cuda.empty_cache()
         gc.collect()

@@ -1,5 +1,6 @@
 import torch
 from scene import Scene, GaussianModel
+from scene.dataset_readers import load_see3d_cameras
 import os
 import sys
 sys.path.append(os.getcwd())
@@ -16,24 +17,23 @@ from PIL import Image
 
 from utils.general_utils import safe_state
 
-from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose, generate_see3d_camera_by_lookat_object_centric
+from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose, generate_see3d_camera_by_lookat_object_centric, generate_random_perturbed_camera_poses
 from guidance.See3D_modules.pcd_render_util import init_pcd_render_multiview, save_rendered_images, filter_pcd_by_edge, downsample_pcd, vis_depth
 
 from matcha.dm_scene.charts import load_charts_data, build_priors_from_charts_data, depths_to_points_parallel
+
+from guidance.cam_utils import build_visibility_masks_2
+from guidance.vis_grid import VisibilityGrid
 
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
-    parser.add_argument("--data_path", required=True, type=str)
     parser.add_argument("--iteration", required=True, type=str)
-    parser.add_argument("--train_view_num", required=True, type=str)
-    parser.add_argument("--output_root_path", required=True, type=str)
+    parser.add_argument("--see3d_stage", required=True, type=int)                 # 1: perturb input views, 2: interpolate input views, 3: random search
     parser.add_argument("--select_inpaint_num", required=True, type=str)
     args = get_combined_args(parser)
-    print("Rendering " + args.model_path)
-    model_name=os.path.basename(args.model_path)
 
     # Initialize system state (RNG)
     safe_state(False)
@@ -41,44 +41,48 @@ if __name__ == "__main__":
     dataset, iteration, pipe = model.extract(args), args.iteration, pipeline.extract(args)
     gaussians = GaussianModel(dataset.sh_degree)
 
-    dataset.eval = True                 # load all images
     scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    viewpoints = scene.getTrainCameras().copy()             # all views
+    train_viewpoints = scene.getTrainCameras().copy()             # all views
 
-    train_view_num = args.train_view_num
-    view_json_path = os.path.join(args.data_path, f'split-{train_view_num}views.json')
-    if os.path.exists(view_json_path):
-        with open(view_json_path, 'r') as f:
-            view_data = json.load(f)
-        train_id_list = view_data['train']
-    else:
-        view_json_path = os.path.join(args.data_path, f'train_test_split_{train_view_num}.json')
-        with open(view_json_path, 'r') as f:
-            view_data = json.load(f)
-        train_id_list = view_data['train_ids']
-    train_viewpoints = [viewpoints[i] for i in train_id_list]
-
-    novel_views_save_root_path = os.path.join(args.model_path, 'see3d_render')
-    os.makedirs(novel_views_save_root_path, exist_ok=True)
+    see3d_render_path = os.path.join(args.source_path, 'see3d_render')
+    os.makedirs(see3d_render_path, exist_ok=True)
 
     # copy reference images
-    ref_views_save_root_path = os.path.join(args.model_path, 'see3d_render', 'ref-views')
-    os.makedirs(ref_views_save_root_path, exist_ok=True)
+    ref_views_save_root_path = os.path.join(see3d_render_path, 'ref-views')
+    if not os.path.exists(ref_views_save_root_path):
+        os.makedirs(ref_views_save_root_path, exist_ok=True)
 
-    img_data_path = os.path.join(args.data_path, 'images')
-    img_data_list = os.listdir(img_data_path)
-    img_data_list.sort()
-    for ref_view_id in train_id_list:
-        # shutil.copy(os.path.join(args.data_path, 'images', f'{ref_view_id:06d}_rgb.png'), os.path.join(ref_views_save_root_path, f'{ref_view_id:06d}_rgb.png'))
-        shutil.copy(os.path.join(img_data_path, img_data_list[ref_view_id]), os.path.join(ref_views_save_root_path, img_data_list[ref_view_id]))
+        # copy ref-views from source_path
+        src_image_root_path = os.path.join(args.source_path, 'images')
+        temp_image_name = os.listdir(src_image_root_path)[0]
+        postfix = temp_image_name.split('.')[-1]
+        for viewpoint in train_viewpoints:
+            image_name = f'{viewpoint.image_name}.{postfix}'
+            shutil.copy(os.path.join(src_image_root_path, image_name), os.path.join(ref_views_save_root_path, image_name))
+
+    # load see3d cameras
+    see3d_cam_path = os.path.join(see3d_render_path, 'see3d_cameras.npz')
+    if os.path.exists(see3d_cam_path):
+        see3d_viewpoints, _ = load_see3d_cameras(see3d_cam_path, os.path.join(see3d_render_path, 'inpainted_images'))
+        train_viewpoints.extend(see3d_viewpoints)
+        print(f'Stage {args.see3d_stage} See3D cameras loaded from {see3d_cam_path}')
+    else:
+        if args.see3d_stage > 1:
+            assert False, 'See3D cameras not found, but see3d_stage > 1'
+
+    # save this stage see3d_render
+    novel_views_save_root_path = os.path.join(see3d_render_path, f'stage{args.see3d_stage}')
+    os.makedirs(novel_views_save_root_path, exist_ok=True)
 
     # render train views
+    alpha_vis_thresh = 0.99
     train_save_root_path = os.path.join(novel_views_save_root_path, 'render-train-views')
     os.makedirs(train_save_root_path, exist_ok=True)
     train_view_depths = []
-    for idx, train_viewpoint in enumerate(train_viewpoints):
+    for train_viewpoint in train_viewpoints:
+        idx = train_viewpoint.colmap_id                                         # colmap_id is the unique index of the train viewpoint and see3d viewpoint
         render_pkg = render(train_viewpoint, gaussians, pipe, background)
         rgb = render_pkg['render']
         alpha = render_pkg['rend_alpha']
@@ -87,21 +91,30 @@ if __name__ == "__main__":
 
         save_img_u8(rgb.permute(1,2,0).detach().cpu().numpy(), os.path.join(train_save_root_path, f'{idx:05d}.png'))
         save_img_f32(depth[0].detach().cpu().numpy(), os.path.join(train_save_root_path, f'depth_{idx:05d}.tiff'))
-        # save .npy
-        np.save(os.path.join(train_save_root_path, f'alpha_{idx:06d}.npy'), alpha[0].detach().cpu().numpy())
-        alpha_vis_thresh = 0.99
-        alpha_vis_mask = alpha[0].detach().cpu().numpy() > alpha_vis_thresh
-        save_img_u8(alpha_vis_mask, os.path.join(train_save_root_path, f'alpha_mask_{idx:06d}.png'))
+
     print(f'Train views render done!')
 
-    gs_train_view_depths = np.array(train_view_depths)
-    gs_train_view_depths = torch.from_numpy(gs_train_view_depths).cuda()
-    gs_train_view_depths = gs_train_view_depths.unsqueeze(1)
-    gs_train_view_points = depths_to_points_parallel(gs_train_view_depths, train_viewpoints)
+    # gs_train_view_depths = np.array(train_view_depths)
+    # gs_train_view_depths = torch.from_numpy(gs_train_view_depths).cuda()
+    # gs_train_view_depths = gs_train_view_depths.unsqueeze(1)
+    # gs_train_view_points = depths_to_points_parallel(gs_train_view_depths, train_viewpoints)
+
+    # init visibility grid
+    bbox_min = torch.min(gaussians.get_xyz, dim=0).values
+    bbox_max = torch.max(gaussians.get_xyz, dim=0).values
+    grid_resolution = 256
+    visibility_grid = VisibilityGrid(bbox_min, bbox_max, grid_resolution, train_viewpoints, train_view_depths)
+    visibility_grid.vis_invisible_pnts(os.path.join(novel_views_save_root_path, 'invisible_points.ply'))
 
     # generate novel cameras
-    # novel_poses, novel_cams = generate_see3d_camera_by_lookat(train_viewpoints, gs_train_view_depths.squeeze(1), gs_train_view_points)
-    novel_poses, novel_cams = generate_see3d_camera_by_lookat_object_centric(train_viewpoints)
+    if args.see3d_stage == 1:
+        novel_poses, novel_cams = generate_random_perturbed_camera_poses(train_viewpoints, visibility_grid, position_std=0.15, rotation_std=0.1)
+    elif args.see3d_stage == 2:
+        novel_poses, novel_cams = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid)
+    else:
+        novel_poses, novel_cams = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid)
+        # novel_poses, novel_cams = generate_see3d_camera_by_lookat(train_viewpoints, visibility_grid, gs_train_view_depths.squeeze(1), gs_train_view_points)
+
 
     # # vis train camera
     # train_c2ws = []
@@ -110,14 +123,13 @@ if __name__ == "__main__":
     #     c2w = np.linalg.inv(w2c)
     #     train_c2ws.append(c2w)
     # train_c2ws = np.array(train_c2ws)
-
-    # # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/data/replica/scan6/gt_mesh/scene_mesh.ply'
-    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/output/mipnerf360-6-views/bonsai-t1-scratch/tetra_meshes/tetra_mesh_binary_search_7_iter_14000.ply'
+    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/data/replica/scan6/gt_mesh/scene_mesh.ply'
     # vis_camera_pose(novel_poses, mesh_path=temp_mesh_path)
     # # vis_camera_pose(train_c2ws, mesh_path=temp_mesh_path)
     # exit()
 
-    # First render gs
+
+    # render gs
     gs_output_dir = os.path.join(novel_views_save_root_path, 'raw-gs')
     os.makedirs(gs_output_dir, exist_ok=True)
 
@@ -136,27 +148,50 @@ if __name__ == "__main__":
         save_img_f32(depth[0].detach().cpu().numpy(), os.path.join(gs_output_dir, f'depth_frame{idx:06d}.tiff'))
         # save .npy
         np.save(os.path.join(gs_output_dir, f'alpha_{idx:06d}.npy'), alpha[0].detach().cpu().numpy())
-        alpha_vis_thresh = 0.99
         alpha_vis_mask = alpha[0].detach().cpu().numpy() > alpha_vis_thresh
 
         none_visible_rate = 1 - alpha_vis_mask.sum() / (alpha_vis_mask.shape[0] * alpha_vis_mask.shape[1])
         gs_none_visible_rate.append(none_visible_rate)
-        save_img_u8(alpha_vis_mask, os.path.join(gs_output_dir, f'mask_frame{idx:06d}.png'))
+        save_img_u8(alpha_vis_mask, os.path.join(gs_output_dir, f'alpha_mask_frame{idx:06d}.png'))
 
         # filter rgb use alpha
         rgb_filtered = rgb.permute(1,2,0).detach().cpu().numpy() * alpha_vis_mask[:,:,None]
-        save_img_u8(rgb_filtered, os.path.join(gs_output_dir, f'warp_frame{idx:06d}.png'))
+        save_img_u8(rgb_filtered, os.path.join(gs_output_dir, f'alpha_warp_frame{idx:06d}.png'))
 
         print(f'Novel view {idx} save done!')
 
-    need_inpaint_views = select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, int(args.select_inpaint_num))
+    # render visibility map
+    visibility_maps = visibility_grid.render_visibility_map(novel_cams, gs_depths)
+    grid_none_visible_rate = []
+    for idx in range(len(visibility_maps)):
+        rgb_path = os.path.join(gs_output_dir, f'ori_warp_frame{idx:06d}.png')
+        rgb_image = Image.open(rgb_path)
+        rgb_image = np.array(rgb_image)
+
+        vis_map = visibility_maps[idx].detach().cpu().numpy()
+        none_visible_rate = 1 - vis_map.sum() / (vis_map.shape[0] * vis_map.shape[1])
+        grid_none_visible_rate.append(none_visible_rate)
+
+        rgb_image = rgb_image * vis_map[:,:,None]
+        rgb_image = Image.fromarray(rgb_image.astype(np.uint8))
+        rgb_image.save(os.path.join(gs_output_dir, f'warp_frame{idx:06d}.png'))
+
+        # save vis_map
+        vis_map = vis_map.astype(np.uint8) * 255
+        vis_map = Image.fromarray(vis_map)
+        vis_map.save(os.path.join(gs_output_dir, f'mask_frame{idx:06d}.png'))
+
+    print(f'Render visibility map done!')
+
+    need_inpaint_views = select_need_inpaint_views(novel_cams, grid_none_visible_rate, gaussians, int(args.select_inpaint_num), none_visible_rate_high_bound=0.6)
     print(f'Need inpaint views: {need_inpaint_views}')
 
-    select_gs_output_dir = args.output_root_path
+    select_gs_output_dir = os.path.join(novel_views_save_root_path, 'select-gs')
     os.makedirs(select_gs_output_dir, exist_ok=True)
     need_inpaint_views_cams = [novel_cams[i] for i in need_inpaint_views]
     # save need inpaint views cameras
     save_cameras = {}
+    save_cameras['train_views'] = len(train_viewpoints)
     for idx, need_inpaint_view_cam in enumerate(need_inpaint_views_cams):
         save_cameras[f'R_{idx:06d}'] = need_inpaint_view_cam.R
         save_cameras[f'T_{idx:06d}'] = need_inpaint_view_cam.T
@@ -170,10 +205,14 @@ if __name__ == "__main__":
         shutil.copy(os.path.join(gs_output_dir, f'ori_warp_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'ori_warp_frame{idx:06d}.png'))
         shutil.copy(os.path.join(gs_output_dir, f'depth_frame{ori_id:06d}.tiff'), os.path.join(select_gs_output_dir, f'depth_frame{idx:06d}.tiff'))
         shutil.copy(os.path.join(gs_output_dir, f'alpha_{ori_id:06d}.npy'), os.path.join(select_gs_output_dir, f'alpha_{idx:06d}.npy'))
-        shutil.copy(os.path.join(gs_output_dir, f'mask_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'mask_frame{idx:06d}.png'))
+        shutil.copy(os.path.join(gs_output_dir, f'alpha_mask_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'alpha_mask_frame{idx:06d}.png'))
+        shutil.copy(os.path.join(gs_output_dir, f'alpha_warp_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'alpha_warp_frame{idx:06d}.png'))
         shutil.copy(os.path.join(gs_output_dir, f'warp_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'warp_frame{idx:06d}.png'))
+        shutil.copy(os.path.join(gs_output_dir, f'mask_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'mask_frame{idx:06d}.png'))
 
     # save need inpaint views cameras
     save_cameras['n_views'] = len(need_inpaint_views_cams)
-    np.savez(os.path.join(select_gs_output_dir, 'see3d_cameras.npz'), **save_cameras)
-    print(f'See3D cameras save to {os.path.join(select_gs_output_dir, "see3d_cameras.npz")}')
+    np.savez(os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_see3d_cameras.npz'), **save_cameras)
+
+    print(f'See3D stage {args.see3d_stage} save done!')
+

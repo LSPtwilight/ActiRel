@@ -11,6 +11,7 @@
 
 import os
 import sys
+sys.path.append(os.getcwd())
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
@@ -22,6 +23,8 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+import cv2
+import torch
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -339,3 +342,49 @@ def load_cameras(args, resolution_scales=[1.0], scale=1.0):
         test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
 
     return train_cameras[scale], test_cameras[scale]
+
+from matcha.dm_scene.cameras import GSCamera
+def load_see3d_cameras(camera_path, inpainted_image_root_path):
+    '''
+    Load see3d inpaint view cameras
+    '''
+
+    print(f'NOTE: Load See3D inpaint view cameras from camera_path {camera_path}')
+
+    temp_image_name = os.listdir(inpainted_image_root_path)[0]
+    postfix = temp_image_name.split('.')[-1]
+
+    see3d_cameras = np.load(camera_path)
+    see3d_viewpoints = []
+    train_views = see3d_cameras['train_views']
+    n_views = see3d_cameras['n_views']
+    for i in range(n_views):
+        R = see3d_cameras[f'R_{i:06d}']
+        T = see3d_cameras[f'T_{i:06d}']
+        FoVx = see3d_cameras[f'FoVx_{i:06d}']
+        FoVy = see3d_cameras[f'FoVy_{i:06d}']
+        image_width = int(see3d_cameras[f'image_width_{i:06d}'])
+        image_height = int(see3d_cameras[f'image_height_{i:06d}'])
+        image_name = f'predict_warp_frame{i:06d}'
+
+        inpainted_image_path = os.path.join(inpainted_image_root_path, image_name + f'.{postfix}')
+        inpainted_image = cv2.imread(inpainted_image_path)
+        inpainted_image = cv2.cvtColor(inpainted_image, cv2.COLOR_BGR2RGB) / 255.0
+        inpainted_image = torch.from_numpy(inpainted_image).float().to("cuda").permute(2, 0, 1)
+
+        see3d_viewpoints.append(GSCamera(
+            colmap_id=i+train_views,                     # avoid colmap id conflict with input viewpoint cameras
+            R=R,
+            T=T,
+            FoVx=FoVx,
+            FoVy=FoVy,
+            image=inpainted_image,
+            image_width=image_width,
+            image_height=image_height,
+            gt_alpha_mask=None,
+            image_name=image_name,
+            uid=None,
+            data_device='cuda',
+        ))
+
+    return see3d_viewpoints, see3d_cameras

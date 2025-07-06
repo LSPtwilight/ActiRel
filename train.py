@@ -143,11 +143,8 @@ if __name__ == '__main__':
     ])
     
     if args.use_refine_depth:
-        refine_depth_path = os.path.join(mast3r_scene_path, 'render-charts-train-views')
-        if not os.path.exists(refine_depth_path):
-            raise ValueError(f'Refine depth path {refine_depth_path} does not exist')
-    else:
-        refine_depth_path = None
+        plane_root_path = os.path.join(mast3r_scene_path, 'plane-refine-depths')
+        refine_depth_path = plane_root_path
 
     refine_free_gaussians_command = " ".join([
         "python", "scripts/refine_free_gaussians.py",
@@ -188,21 +185,15 @@ if __name__ == '__main__':
         dense_arg,
     ])
 
-    see3d_render_command = " ".join([
-        "python", "2d-gaussian-splatting/render_novel_views.py",
+    def get_see3d_inpaint_command(stage, select_inpaint_num):
+        return " ".join([
+        "python", "scripts/see3d_inpaint.py",
+        "--source_path", mast3r_scene_path,
         "--model_path", free_gaussians_path,
+        "--plane_root_dir", plane_root_path,
         "--iteration", '7000',
-        "--train_view_num", str(args.config_view_num),
-        "--data_path", args.source_path,
-        "--output_root_path", warp_root_dir,
-        "--select_inpaint_num", str(args.select_inpaint_num),
-    ])
-
-    see3d_inpaint_command = " ".join([
-        "python", "2d-gaussian-splatting/guidance/see3d_util.py",
-        "--source_imgs_dir", ref_views_save_root_path,
-        "--warp_root_dir", warp_root_dir,
-        "--output_root_dir", inpaint_root_dir,
+        "--see3d_stage", str(stage),
+        "--select_inpaint_num", str(select_inpaint_num),
     ])
 
     continue_train_command = " ".join([
@@ -234,28 +225,62 @@ if __name__ == '__main__':
         "--sparse_view_num", str(args.config_view_num),
     ])
 
+    render_charts_command = " ".join([
+        "python", "2d-gaussian-splatting/render_chart_views.py",
+        "--source_path", mast3r_scene_path,
+        "--save_root_path", plane_root_path,
+    ])
+
+    generate_2Dplane_command = " ".join([
+        "python", "2d-gaussian-splatting/planes/plane_excavator.py",
+        "--plane_root_path", plane_root_path,
+    ])
+
+    pnts_path = os.path.join(mast3r_scene_path, 'chart_pcd.ply')
+    vis_plane_path = os.path.join(mast3r_scene_path, 'vis_plane')
+    plane_refine_depth_command = " ".join([
+        "python", "scripts/plane_refine_depth.py",
+        "--source_path", mast3r_scene_path,
+        "--plane_root_path", plane_root_path,
+        "--pnts_path", pnts_path,
+        # "--vis_plane_path", vis_plane_path,
+    ])
+
+    see3d_root_path = os.path.join(mast3r_scene_path, 'see3d_render')
+    plane_refine_depth_command_2 = " ".join([
+        "python", "scripts/plane_refine_depth.py",
+        "--source_path", mast3r_scene_path,
+        "--plane_root_path", plane_root_path,
+        "--pnts_path", pnts_path,
+        "--see3d_root_path", see3d_root_path,
+        # "--vis_plane_path", vis_plane_path,
+    ])
+
     t1 = time.time()
     
     # run MAtCha training
     os.system(sfm_command)
     os.system(align_charts_command)
+
+    # generate 2D planes + refine depth for input views + init gaussian training
+    os.system(render_charts_command)
+    os.system(generate_2Dplane_command)
+    os.system(plane_refine_depth_command)
     os.system(refine_free_gaussians_command)
 
-    # render all images, export mesh, and evaluate
-    os.system(render_all_img_command)
-    os.system(tetra_command)
-    os.system(eval_command)
+    # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
+    os.system(get_see3d_inpaint_command(1, args.select_inpaint_num))
+    os.system(plane_refine_depth_command_2)
+    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
+    os.system(mv_cmd)
+    os.system(refine_free_gaussians_command)
 
-    # see3d inpainting
-    os.system(see3d_render_command)
-    os.system(see3d_inpaint_command)
-
-    if args.scratch_train:
-        # scratch training
-        os.system(scratch_train_command)
-    else:
-        # continue training
-        os.system(continue_train_command)
+    # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
+    os.system(get_see3d_inpaint_command(2, args.select_inpaint_num))
+    os.system(plane_refine_depth_command_2)
+    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
+    os.system(mv_cmd)
+    os.system(refine_free_gaussians_command)
 
     # render all images, export mesh, and evaluate
     os.system(render_all_img_command)
