@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
 import torch
 import sys
 from datetime import datetime
@@ -127,13 +128,24 @@ def safe_state(silent):
 
     sys.stdout = F(silent)
 
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
+    # random.seed(0)
+    # np.random.seed(0)
+    # torch.manual_seed(0)
+    # torch.cuda.set_device(torch.device("cuda:0"))
+
+    seed_everything()
+    print("Freeze random seed")
+
+def seed_everything():
+    seed = 0
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PL_GLOBAL_SEED"] = str(seed)
     torch.cuda.set_device(torch.device("cuda:0"))
-
-
-
 
 def create_rotation_matrix_from_direction_vector_batch(direction_vectors):
     # Normalize the batch of direction vectors

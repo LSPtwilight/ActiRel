@@ -33,4 +33,12 @@ if __name__ == '__main__':
         command = f"python 2d-gaussian-splatting/planes/refine_depth_with_planes.py --source_path {args.source_path} --plane_root_path {args.plane_root_path}"
     os.system(command)
 
+    # get confident map
+    if args.see3d_root_path is not None:
+        command = f"python 2d-gaussian-splatting/guidance/inconsistence_solver.py --source_path {args.source_path} --plane_root_path {args.plane_root_path} --see3d_root_path {args.see3d_root_path}"
+    else:
+        command = f"python 2d-gaussian-splatting/guidance/inconsistence_solver.py --source_path {args.source_path} --plane_root_path {args.plane_root_path}"
+    os.system(command)
+
     print('Plane refine depth done!')
+

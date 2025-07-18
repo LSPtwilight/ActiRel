@@ -28,7 +28,7 @@ def normalise_coordinates(x_pixel, dims):
     return x_norm
 
 def setup_sam(
-    sam_checkpoint="/home/nijunfeng/mycode/project/Fundamental-Models/segment-anything/checkpoints/sam_vit_h_4b8939.pth", 
+    sam_checkpoint="./checkpoint/segment-anything/sam_vit_h_4b8939.pth", 
     model_type = "vit_h", device="cuda"
 ):
 

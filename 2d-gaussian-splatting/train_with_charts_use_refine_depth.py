@@ -19,7 +19,7 @@ import gc
 import copy
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, l1_loss_with_conf
 from utils.sh_utils import SH2RGB
 from gaussian_renderer import render, network_gui
 import sys
@@ -42,6 +42,7 @@ from matcha.dm_scene.charts import (
     depths_to_points_parallel,
     depth2normal_parallel,
     normal2curv_parallel,
+    voxel_downsample_gaussians,
 )
 from matcha.dm_regularization.depth import compute_depth_order_loss
 from matcha.dm_utils.rendering import normal2curv
@@ -77,7 +78,7 @@ def training(
     use_refined_charts, use_mip_filter, dense_data_path, use_chart_view_every_n_iter,
     normal_consistency_from, distortion_from,
     depthanythingv2_checkpoint_dir, depthanything_encoder, 
-    dense_regul, refine_depth_path
+    dense_regul, refine_depth_path, use_downsample_gaussians
 ):
     
     save_log_images = False
@@ -147,6 +148,7 @@ def training(
     pda_depths = []
     pda_points_list = []
     pda_points_colors_list = []
+    pda_confident_maps_list = []
 
     input_view_num = len(scene.getTrainCameras())
     see3d_view_num = len(see3d_gs_cameras_list)
@@ -171,28 +173,78 @@ def training(
         pda_point_colors = pda_point_colors.reshape(-1, 3)
         pda_points_colors_list.append(pda_point_colors)
 
-    # pda_depths = torch.stack(pda_depths, dim=0).cuda()            # See3D depth shape is not similar to input views
+        pda_confident_map_path = os.path.join(refine_depth_path, f'confident_map_frame{idx:06d}.png')
+        pda_confident_map = Image.open(pda_confident_map_path)
+        pda_confident_map = np.array(pda_confident_map) / 255                   # 0 or 1
+        pda_confident_map = torch.from_numpy(pda_confident_map).cuda()
+        pda_confident_maps_list.append(pda_confident_map)
 
-    if create_gaussians_from_pda_depth:
-        all_pda_points = np.concatenate(pda_points_list, axis=0)
-        all_pda_points_colors = np.concatenate(pda_points_colors_list, axis=0)
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(all_pda_points)
-        pcd.colors = o3d.utility.Vector3dVector(all_pda_points_colors)
+    # ===================================================================================
+    # Initialize gaussians
+    max_gaussians_num = 10_000_000
+    print(f"Max gaussians num: {max_gaussians_num}, use downsample gaussians: {use_downsample_gaussians}")
 
-        voxel_size = 0.02
-        downsampled_pcd = pcd.voxel_down_sample(voxel_size)
-        downsampled_points = np.asarray(downsampled_pcd.points)
-        downsampled_colors = np.asarray(downsampled_pcd.colors)
-        pseudo_normals = np.ones_like(downsampled_points)
-        init_pcd = BasicPointCloud(points=downsampled_points, colors=downsampled_colors, normals=pseudo_normals)
-        gaussians.create_from_pcd(init_pcd, gaussians.spatial_lr_scale)
-        print("[INFO] Gaussians created from init points.")
+    input_view_depths = pda_depths[:input_view_num]
+    input_view_depths_stack = torch.stack(input_view_depths, dim=0).cuda()
+    _images = [cam.original_image.cuda().permute(1, 2, 0) for cam in scene.getTrainCameras()]
+    pda_points = depths_to_points_parallel(input_view_depths_stack, scene.getTrainCameras())
+    N, H, W = input_view_depths_stack.shape
+    pda_points = pda_points.reshape(N, H, W, 3)
+    input_view_gaussian_params = get_gaussian_parameters_from_pda_data(
+        pda_points=pda_points,
+        images=_images,
+        conf_th=-1.,  # TODO: Try higher values
+        ratio_th=5.,
+        normal_scale=1e-10,
+        normalized_scales=0.5,
+    )
 
-        del init_pcd, downsampled_pcd, downsampled_points, downsampled_colors
+    if see3d_view_num > 0:
+        see3d_view_depths = pda_depths[input_view_num:]
+        see3d_view_depths_stack = torch.stack(see3d_view_depths, dim=0).cuda()
+        _images = [cam.original_image.cuda().permute(1, 2, 0) for cam in see3d_gs_cameras_list]
+        see3d_points = depths_to_points_parallel(see3d_view_depths_stack, see3d_gs_cameras_list)
+        N, H, W = see3d_view_depths_stack.shape
+        see3d_points = see3d_points.reshape(N, H, W, 3)
+        see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
+            pda_points=see3d_points,
+            images=_images,
+            conf_th=-1.,  # TODO: Try higher values
+            ratio_th=5.,
+            normal_scale=1e-10,
+            normalized_scales=0.5,
+        )
+
+        gaussian_params = {}
+        for key in input_view_gaussian_params.keys():
+            gaussian_params[key] = torch.cat([input_view_gaussian_params[key], see3d_gaussian_params[key]], dim=0)
 
     else:
-        raise NotImplementedError("Not implemented")
+        gaussian_params = input_view_gaussian_params
+
+    # Downsample gaussians
+    if len(gaussian_params['means']) > max_gaussians_num and use_downsample_gaussians:
+        sample_idx, downsample_factor = voxel_downsample_gaussians(gaussian_params, voxel_size=0.005)
+        print(f"Downsampled {len(gaussian_params['means'])} gaussians to {len(sample_idx)} gaussians...")
+    else:
+        sample_idx = torch.arange(len(gaussian_params['means']))
+        downsample_factor = 1.0
+        print(f"Not downsampling gaussians, using all {len(gaussian_params['means'])} gaussians...")
+
+    print(f"Final number of gaussians: {len(sample_idx)}")
+    
+    _means = gaussian_params['means'][sample_idx]
+    _scales = gaussian_params['scales'][..., :2][sample_idx] * downsample_factor
+    _quaternions = gaussian_params['quaternions'][sample_idx]
+    _colors = gaussian_params['colors'][sample_idx]
+    if use_dense_supervision:
+        with torch.no_grad():
+            _means = torch.cat([_means, dense_gaussians.get_xyz.detach()], dim=0)
+            _scales = torch.cat([_scales, dense_gaussians.get_scaling.detach()], dim=0)
+            _quaternions = torch.cat([_quaternions, dense_gaussians.get_rotation.detach()], dim=0)
+            _colors = torch.cat([_colors, SH2RGB(dense_gaussians._features_dc.detach()[:, 0])], dim=0)
+    gaussians.create_from_parameters(_means, _scales, _quaternions, _colors, gaussians.spatial_lr_scale)
+    print("[INFO] Gaussians created from pnts data.")
 
     # Delete unused variables
     if use_dense_supervision:
@@ -242,7 +294,9 @@ def training(
     if see3d_view_num > 0:
         see3d_refine_depths = pda_depths[input_view_num:]
         see3d_refine_depths = torch.stack(see3d_refine_depths, dim=0).cuda()        # [n_views, h, w]
-        see3d_pseudo_confs = torch.ones_like(see3d_refine_depths) * 1.5             # NOTE: hard code 1.5 as in the original implementation
+        # see3d_pseudo_confs = torch.ones_like(see3d_refine_depths) * 1.5             # NOTE: hard code 1.5 as in the original implementation
+        see3d_pseudo_confs = pda_confident_maps_list[input_view_num:]
+        see3d_pseudo_confs = torch.stack(see3d_pseudo_confs, dim=0).cuda()
         see3d_world_view_transforms = torch.stack([see3d_gs_cameras_list[i].world_view_transform for i in range(len(see3d_gs_cameras_list))])
         see3d_full_proj_transforms = torch.stack([see3d_gs_cameras_list[i].full_proj_transform for i in range(len(see3d_gs_cameras_list))])
         see3d_prior_normals = depth2normal_parallel(
@@ -333,8 +387,13 @@ def training(
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        if viewpoint_idx >= input_view_num:                     # see3d view
+            rgb_current_conf = total_confs_list[viewpoint_idx]
+            Ll1 = l1_loss_with_conf(image, gt_image, rgb_current_conf)
+            loss = Ll1
+        else:
+            Ll1 = l1_loss(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         # regularization
         lambda_normal = opt.lambda_normal if iteration > normal_consistency_from else 0.0
@@ -800,6 +859,7 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument("--refine_depth_path", type=str, required=True)
+    parser.add_argument("--use_downsample_gaussians", action="store_true", help="Use downsample gaussians")
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=None)  # 6009
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
@@ -840,7 +900,7 @@ if __name__ == "__main__":
         args.dense_data_path, args.use_chart_view_every_n_iter,
         args.normal_consistency_from, args.distortion_from,
         args.depthanythingv2_checkpoint_dir, args.depthanything_encoder,
-        args.dense_regul, args.refine_depth_path
+        args.dense_regul, args.refine_depth_path, args.use_downsample_gaussians
     )
 
     # All done

@@ -65,7 +65,7 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
 
 def compute_weights(timesteps, max_time=333.0, min_time=0.0):
     weights = (timesteps - min_time) / (max_time - min_time)
-    weights = torch.clamp(weights, 0.0, 1.0)  # 限制权重在0和1之间
+    weights = torch.clamp(weights, 0.0, 1.0)    # Clamp weights between 0 and 1
     return weights
 
 class MVDreamPipeline(DiffusionPipeline):

@@ -119,6 +119,49 @@ def schedule_regularization_factor(iteration, initial_factor=0.5, time_interval=
     regularization_factor = max(regularization_factor, min_factor)
     return regularization_factor
 
+def voxel_downsample_gaussians(gaussian_params, voxel_size=0.01):
+    """
+    Downsample Gaussian parameters using voxel-based method
+    
+    Args:
+        gaussian_params: Dictionary containing Gaussian parameters, must include 'means' key
+        voxel_size: Voxel size for downsampling, default 0.01
+    
+    Returns:
+        sample_idx: Tensor containing the indices of the downsampled Gaussian parameters
+    """
+    import open3d as o3d
+    
+    # Get Gaussian center points
+    means = gaussian_params['means']  # [N, 3]
+    
+    # Create point cloud
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(means.cpu().numpy())
+    
+    # Add indices as color information for tracking original indices
+    # Encode index information into colors
+    original_indices = np.arange(len(means))
+    # Use normalized indices as colors so we can recover original indices after downsampling
+    normalized_indices = original_indices / len(means)
+    colors = np.column_stack([normalized_indices, np.zeros(len(means)), np.zeros(len(means))])
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    
+    # Perform voxel downsampling
+    downsampled_pcd = pcd.voxel_down_sample(voxel_size)
+    
+    # Recover original indices from downsampled point cloud
+    downsampled_colors = np.asarray(downsampled_pcd.colors)
+    recovered_indices = np.round(downsampled_colors[:, 0] * len(means)).astype(int)
+
+    # Convert to torch tensor
+    sample_idx = torch.from_numpy(recovered_indices).long()
+
+    downsample_factor = len(means) / len(sample_idx)
+    
+    print(f"Voxel downsampling: {len(means)} -> {len(sample_idx)} gaussians (factor: {downsample_factor:.2f})")
+    
+    return sample_idx, downsample_factor
 
 def get_gaussian_parameters_from_charts_data(
     charts_data: dict, 

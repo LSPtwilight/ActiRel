@@ -12,16 +12,25 @@ if __name__ == '__main__':
     parser.add_argument("--iteration", required=True, type=str)
     parser.add_argument("--see3d_stage", required=True, type=int)                 # 1: perturb input views, 2: interpolate input views, 3: random search
     parser.add_argument("--select_inpaint_num", required=True, type=str)
+    parser.add_argument("--none_difix", action='store_true')
     args = parser.parse_args()
 
     # 1. render novel views
     command = f"python 2d-gaussian-splatting/render_novel_views.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_stage {args.see3d_stage} --select_inpaint_num {args.select_inpaint_num}"
     os.system(command)
 
-    # 2. inpaint rgb
     ref_image_path = os.path.join(args.source_path, 'see3d_render', 'ref-views')
     warp_image_path = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs')
     output_root_dir = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs-inpainted')
+
+    if not args.none_difix:
+        # (pre difix3d) use difix3d to remove degradation in warp frame
+        difix3d_warp_image_path = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs-difix')
+        command = f"python 2d-gaussian-splatting/guidance/difix3d_util_pre.py --input_dir {warp_image_path} --output_dir {difix3d_warp_image_path}"
+        os.system(command)
+        warp_image_path = difix3d_warp_image_path
+
+    # 2. inpaint rgb
     command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir}"
     os.system(command)
 
@@ -35,7 +44,11 @@ if __name__ == '__main__':
     os.system(command)
 
     # 5. merge results
-    command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir}"
-    os.system(command)
+    if not args.none_difix:
+        command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir}"
+        os.system(command)
+    else:
+        command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir} --none_difix"
+        os.system(command)
 
     print(f'See3D stage {args.see3d_stage} inpaint done!')

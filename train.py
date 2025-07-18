@@ -68,6 +68,7 @@ if __name__ == '__main__':
     parser.add_argument('--select_inpaint_num', type=int, default=20, help='Number of views to select for inpainting.')
     parser.add_argument('--scratch_train', action='store_true', help='Run the scratch training step')
     parser.add_argument('--use_refine_depth', action='store_true', help='Use refine depth for training')
+    parser.add_argument('--use_downsample_gaussians', action='store_true', help='Use downsample gaussians for training')
     args = parser.parse_args()
     
     # Set output paths
@@ -82,11 +83,6 @@ if __name__ == '__main__':
     free_gaussians_path = os.path.join(args.output_path, 'free_gaussians')
     tsdf_meshes_path = os.path.join(args.output_path, 'tsdf_meshes')
     tetra_meshes_path = os.path.join(args.output_path, 'tetra_meshes')
-    warp_root_dir = os.path.join(free_gaussians_path, 'see3d_render', 'select-gs')
-    ref_views_save_root_path = os.path.join(free_gaussians_path, 'see3d_render', 'ref-views')
-    inpaint_root_dir = os.path.join(free_gaussians_path, 'see3d_render', 'select-gs-inpainted')
-    continue_train_root_dir = os.path.join(free_gaussians_path, 'gs-continue-training')
-    scratch_train_root_dir = os.path.join(free_gaussians_path, 'gs-scratch-training')
     
     # Dense supervision (Optional)
     if args.dense_supervision:
@@ -154,6 +150,7 @@ if __name__ == '__main__':
         dense_arg,
         "--dense_regul", args.dense_regul,
         "--refine_depth_path", refine_depth_path,
+        "--use_downsample_gaussians" if args.use_downsample_gaussians else "",
     ])
 
     render_all_img_command = " ".join([
@@ -186,6 +183,7 @@ if __name__ == '__main__':
     ])
 
     def get_see3d_inpaint_command(stage, select_inpaint_num):
+        print('NOTE: not use difix3d')
         return " ".join([
         "python", "scripts/see3d_inpaint.py",
         "--source_path", mast3r_scene_path,
@@ -194,28 +192,7 @@ if __name__ == '__main__':
         "--iteration", '7000',
         "--see3d_stage", str(stage),
         "--select_inpaint_num", str(select_inpaint_num),
-    ])
-
-    continue_train_command = " ".join([
-        "python", "2d-gaussian-splatting/train_gaussian_continue.py",
-        "-s", mast3r_scene_path,
-        "-m", free_gaussians_path,
-        "--warp_root_path", warp_root_dir,
-        "--inpaint_root_path", inpaint_root_dir,
-        "--output_root_path", continue_train_root_dir,
-        "--load_iteration", '7000',
-        "--train_iterations", '7000',
-    ])
-
-    scratch_train_command = " ".join([
-        "python", "2d-gaussian-splatting/train_gaussian_from_scratch.py",
-        "-s", mast3r_scene_path,
-        "-m", free_gaussians_path,
-        "--warp_root_path", warp_root_dir,
-        "--inpaint_root_path", inpaint_root_dir,
-        "--output_root_path", scratch_train_root_dir,
-        "--load_iteration", '7000',
-        "--train_iterations", '7000',
+        "--none_difix",
     ])
 
     eval_command = " ".join([
@@ -282,11 +259,34 @@ if __name__ == '__main__':
     os.system(mv_cmd)
     os.system(refine_free_gaussians_command)
 
+    # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
+    os.system(get_see3d_inpaint_command(3, args.select_inpaint_num))
+    os.system(plane_refine_depth_command_2)
+    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
+    os.system(mv_cmd)
+    os.system(refine_free_gaussians_command)
+
     # render all images, export mesh, and evaluate
     os.system(render_all_img_command)
     os.system(tetra_command)
     os.system(eval_command)
 
+    # # vis global 3D plane by mesh
+    # mesh_list = os.listdir(tetra_meshes_path)
+    # mesh_list = [mesh_name for mesh_name in mesh_list if mesh_name.endswith('.ply')]
+    # mesh_list.sort()
+    # mesh_name = mesh_list[-1]
+    # mesh_path = os.path.join(tetra_meshes_path, mesh_name)
+    # print(f"Mesh path: {mesh_path}")
+    # vis_global_3Dplane_by_mesh_command = " ".join([
+    #     "python", "2d-gaussian-splatting/planes/vis_global_3Dplane_by_mesh.py",
+    #     "--source_path", mast3r_scene_path,
+    #     "--mesh_path", mesh_path,
+    #     "--plane_root_path", plane_root_path,
+    #     "--see3d_root_path", see3d_root_path,
+    #     "--output_path", os.path.join(args.output_path, 'vis_global_plane_color_mesh.ply'),
+    # ])
+    # os.system(vis_global_3Dplane_by_mesh_command)
 
     t2 = time.time()
     print(f"Total running time: {t2 - t1} seconds")

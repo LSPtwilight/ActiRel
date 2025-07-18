@@ -159,3 +159,4 @@ mycode/
 output/
 .vscode/
 checkpoint/
+*.out

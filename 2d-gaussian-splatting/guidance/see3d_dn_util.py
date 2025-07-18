@@ -17,6 +17,7 @@ import torch
 import matplotlib.pyplot as plt
 from utils.point_utils import depth_to_normal
 from utils.render_utils import save_img_f32, save_img_u8
+from utils.general_utils import seed_everything
 
 def get_surf_cam_normal(view, depth):
     world_normal_map = depth_to_normal(view, depth)
@@ -31,6 +32,8 @@ if __name__ == "__main__":
     parser.add_argument('--source_path', type=str)
     parser.add_argument("--see3d_stage", required=True, type=int)                 # 1: perturb input views, 2: interpolate input views, 3: random search
     args = parser.parse_args()
+
+    seed_everything()
 
     cur_see3d_root_dir = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}')
     warp_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs')

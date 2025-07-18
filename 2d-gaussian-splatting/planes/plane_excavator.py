@@ -17,6 +17,8 @@ from PIL import Image
 
 from mask_generator import setup_sam, infer_masks
 from tools import to_world_space, remove_small_isolated_areas, merge_normal_clusters
+sys.path.append(os.path.join(os.getcwd(), '2d-gaussian-splatting'))
+from utils.general_utils import seed_everything
 
 def normals_cluster(normals: np.ndarray, img_shape: tuple, n_init_clusters: int = 8, n_clusters: int = 6, min_size_ratio: float = 0.004):
     """
@@ -230,6 +232,8 @@ if __name__ == "__main__":
     parser.add_argument("--use_normal_estimator", action='store_true')
     args = parser.parse_args()
 
+    seed_everything()
+
     data_path = args.plane_root_path
     file_list = os.listdir(data_path)
     rgb_list = [file for file in file_list if file.endswith('.png') and 'rgb_frame' in file]
@@ -249,12 +253,16 @@ if __name__ == "__main__":
     if args.use_normal_estimator:
         print('NOTE: use normal estimator for plane extraction')
 
+    print('********** start plane extraction **********')
+
     for idx, (rgb_file, normal_file) in enumerate(zip(rgb_list, normal_list)):
         rgb_path = os.path.join(data_path, rgb_file)
         normal_path = os.path.join(data_path, normal_file)
         rgb = Image.open(rgb_path)
         rgb = np.array(rgb)
         normal = np.load(normal_path)
+
+        print(f'********** processing frame {idx:06d} **********')
 
         with torch.no_grad():
             if args.use_normal_estimator:

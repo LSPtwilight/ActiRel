@@ -1,6 +1,8 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.getcwd(), '2d-gaussian-splatting'))
+from scene.dataset_readers import load_see3d_cameras
 import copy
 import torch
 from scene import Scene
@@ -370,6 +372,7 @@ def marching_tetrahedra_with_binary_search(
             face_mask = mask[faces].all(axis=1)
             mesh.update_vertices(mask)
             mesh.update_faces(face_mask)
+            print("[INFO] Filtering mesh with distance <= scale")
         
         mesh.export(os.path.join(render_path, f"tetra_mesh_binary_search_{step}_iter_{iteration}.ply"))
 
@@ -441,6 +444,16 @@ def extract_mesh(
             )
         else:
             cams = _cams
+
+        see3d_root_path = os.path.join(dataset.source_path, 'see3d_render')
+        if os.path.exists(see3d_root_path):
+            print(f"[INFO] Loading see3d render data from: {see3d_root_path}")
+            see3d_cameras_path = os.path.join(see3d_root_path, 'see3d_cameras.npz')
+            inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images')
+            see3d_cameras, _ = load_see3d_cameras(see3d_cameras_path, inpaint_root_dir)
+            cams = cams + see3d_cameras
+            print(f"          > Number of see3d cameras: {len(see3d_cameras)}")
+            print(f"          > Pseudo-views interpolation will be disabled because see3d render data is provided.")
         
         marching_tetrahedra_with_binary_search(
             model_path=dataset.model_path, 

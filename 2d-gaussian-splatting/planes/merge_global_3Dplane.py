@@ -278,12 +278,7 @@ if __name__ == "__main__":
 
         train_viewpoints = train_viewpoints + see3d_gs_cameras_list
 
-
-    # load pnts
-    pnts_path = args.pnts_path
-    pnts = trimesh.load(pnts_path).vertices
-    pnts = torch.tensor(pnts, dtype=torch.float32).cuda()
-
+    # load plane mask and refine points
     plane_root_path = args.plane_root_path
     plane_masks = []
     for i in range(len(train_viewpoints)):
@@ -291,6 +286,27 @@ if __name__ == "__main__":
         plane_mask = np.load(plane_mask_path)
         plane_mask = torch.tensor(plane_mask, dtype=torch.int).cuda()
         plane_masks.append(plane_mask)
+
+    # load last refine points
+    pnts_list = []
+    file_list = os.listdir(plane_root_path)
+    refine_points_file_name = [file for file in file_list if 'refine_points_frame' in file]
+    refine_points_file_name.sort()
+    for refine_points_file_name_i in refine_points_file_name:
+        pnts_path = os.path.join(plane_root_path, refine_points_file_name_i)                # last refine points
+        pnts_i = trimesh.load(pnts_path).vertices
+        pnts_i = torch.tensor(pnts_i, dtype=torch.float32).cuda()
+        pnts_list.append(pnts_i)
+
+    if len(pnts_list) == 0:
+        # load default chart pnts
+        pnts_path = args.pnts_path
+        pnts = trimesh.load(pnts_path).vertices
+        pnts = torch.tensor(pnts, dtype=torch.float32).cuda()
+        print(f'********** load default chart pnts from {pnts_path} **********')
+    else:
+        pnts = torch.cat(pnts_list, dim=0)
+        print(f'********** load refine points **********')
 
     save_path = os.path.join(plane_root_path, 'global_3Dplane_ID_dict.json')
     if os.path.exists(save_path):

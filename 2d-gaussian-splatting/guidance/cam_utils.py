@@ -14,6 +14,13 @@ from matcha.dm_scene.charts import project_points, transform_points_world_to_vie
 def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))
 
+def to_tensor_safe(data, dtype=torch.float32, device='cuda'):
+    """Safely convert data to tensor, handling both numpy arrays and tensors"""
+    if isinstance(data, torch.Tensor):
+        return data.to(dtype=dtype, device=device)
+    else:
+        return torch.from_numpy(data).to(dtype=dtype, device=device)
+
 def vis_camera_pose(poses, mesh_path=None):
     fig = pv.figure()
     
@@ -495,6 +502,37 @@ def generate_see3d_camera(input_c2ws, interpolate_num=10, camera_type='ellipse',
 
     return random_poses, cur_cams
 
+def generate_interpolated_camera_poses(train_cams, visibility_grid, interpolate_num=10, width=512, height=512, fovy_deg=60, fovx_deg=None, device='cuda'):
+    """Generate interpolated camera poses."""
+    # get fovy and fovx
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    # get train c2w matrix
+    train_w2cs = [train_cam.world_view_transform.transpose(0, 1) for train_cam in train_cams]
+    train_w2cs = [train_w2c.cpu().numpy() for train_w2c in train_w2cs]
+    train_c2ws = [np.linalg.inv(w2c) for w2c in train_w2cs]
+    train_c2ws = np.stack(train_c2ws, axis=0)
+
+    # get interpolated c2w matrix
+    interpolated_c2ws = interpolate_camera_path(train_c2ws, interpolate_num)
+
+    # check if interpolated camera center is valid
+    interpolated_cam_centers = interpolated_c2ws[:, :3, 3]
+    interpolated_cam_centers = torch.tensor(interpolated_cam_centers, dtype=torch.float32, device=device)
+    valid_mask = visibility_grid.check_valid_camera_center(interpolated_cam_centers)
+    valid_mask = valid_mask.cpu().numpy()
+    interpolated_c2ws = interpolated_c2ws[valid_mask]
+
+    # generate camera
+    cur_cams = []
+    for idx in range(len(interpolated_c2ws)):
+        c2w = interpolated_c2ws[idx].astype(np.float32)
+        cur_cam = MiniCam(c2w, width, height, fovy=fovy, fovx=fovx)
+        cur_cams.append(cur_cam)
+    
+    return interpolated_c2ws, cur_cams
+
 def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, train_view_points, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
 
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
@@ -901,75 +939,85 @@ def generate_random_sample_cameras(selected_cams, visibility_grid, train_cams, m
 
     return new_poses, cur_cams
 
-# elevation & azimuth to pose (cam2world) matrix
-def orbit_camera(elevation, azimuth, radius=1, target=None):
-    # radius: scalar
-    # elevation: scalar, in (-90, 90), from +y to -y is (-90, 90)
-    # azimuth: scalar, in (-180, 180), from +z to +x is (0, 90)
-    # return: [4, 4], camera pose matrix
+def generate_look_around_camera_poses(train_cams, visibility_grid, azimuth_bin=6, elevation_bin=8, width=512, height=512, fovy_deg=60, fovx_deg=None):
+    """
+    Generate look around camera poses.
+    """
+
+    # get fovy and fovx
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    train_cam_centers = torch.stack([cam.camera_center for cam in train_cams], dim=0)
+    device = train_cam_centers.device
+    traj_center = torch.mean(train_cam_centers, dim=0)
+
+    # check traj_center is valid
+    traj_center_valid_mask = visibility_grid.check_valid_camera_center(traj_center)
+    if traj_center_valid_mask:
+        cam_center = traj_center
+        print(f"traj_center is valid, use it as cam_center")
+    else:
+        x_min, x_max = train_cam_centers[:, 0].min(), train_cam_centers[:, 0].max()
+        y_min, y_max = train_cam_centers[:, 1].min(), train_cam_centers[:, 1].max()
+        z_min, z_max = train_cam_centers[:, 2].min(), train_cam_centers[:, 2].max()
+        
+        voxel_res = 8
+        x_coords = torch.linspace(x_min, x_max, voxel_res, device=device)
+        y_coords = torch.linspace(y_min, y_max, voxel_res, device=device)
+        z_coords = torch.linspace(z_min, z_max, voxel_res, device=device) 
+        X, Y, Z = torch.meshgrid(x_coords, y_coords, z_coords, indexing='ij')
+        voxel_grid_points = torch.stack([X.flatten(), Y.flatten(), Z.flatten()], dim=1)  # [voxel_res^3, 3]
+        
+        valid_mask = visibility_grid.check_valid_camera_center(voxel_grid_points)
+        valid_voxel_points = voxel_grid_points[valid_mask]
+        distances = torch.norm(valid_voxel_points - traj_center.unsqueeze(0), dim=1)
+        closest_idx = torch.argmin(distances)
+        cam_center = valid_voxel_points[closest_idx]
+        print(f"traj_center is not valid, use the closest voxel point as cam_center")
+
+    # generate look around camera poses
+    azimuth_list = np.linspace(-180, 180, azimuth_bin)
+    elevation_list = np.linspace(-70, 70, elevation_bin)
+
+    new_poses = []
+    cur_cams = []
+    assert width == height
+    render_resolution = width
+    for azimuth in azimuth_list:
+        for elevation in elevation_list:
+            pose, cam = get_pose_and_cam(elevation, azimuth, fovx=fovx, fovy=fovy, cam_center=cam_center.cpu().numpy(), render_resolution=render_resolution)
+            new_poses.append(pose)
+            cur_cams.append(cam)
+    return new_poses, cur_cams
+
+def get_pose_and_cam(elevation_deg, azimuth_deg, fovx, fovy, cam_center, radius=1, render_resolution=512):
+
+    def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+        """Construct lookat view matrix."""
+        vec2 = safe_normalize(-lookdir)
+        vec1 = safe_normalize(up)
+        vec0 = safe_normalize(np.cross(vec1, vec2))
+        vec1 = safe_normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, position], axis=1)
+        return m
+
+    elevation = np.deg2rad(elevation_deg)
+    azimuth = np.deg2rad(azimuth_deg)
 
     x = radius * np.cos(elevation) * np.cos(azimuth)
     y = radius * np.cos(elevation) * np.sin(azimuth)
     z = radius * np.sin(elevation)
-    if target is None:
-        target = np.zeros([3], dtype=np.float32)
-    campos = np.array([x, y, z]) + target  # [3]
-    T = np.eye(4, dtype=np.float32)
-    T[:3, :3] = look_at(campos, target)
-    T[:3, 3] = campos
-    return T
+    lookat_point = np.array([x, y, z]) + cam_center
 
+    # NOTE: hard code up vector for colmap coords
+    up = np.array([0, 0, -1])
+    pose_raw = viewmatrix(cam_center - lookat_point, up, cam_center)
+    pose = np.eye(4).astype(np.float32)
+    pose[:3, :] = pose_raw[:3, :]
 
-def get_pose_and_cam(elevation_deg, azimuth_deg, fovx, fovy, radius=1, target=None, render_resolution=512):
-    elevation = np.deg2rad(elevation_deg)
-    azimuth = np.deg2rad(azimuth_deg)
-    pose = orbit_camera(elevation, azimuth, radius, target=target)
     cam = MiniCam(pose, render_resolution, render_resolution, fovy=fovy, fovx=fovx)
     return pose, cam
-
-
-# generate MVDream orthogonal viewpoints
-def generate_mvdream_orthogonal_viewpoints(obj_bbox, elevation_deg_list=[15, 70], azimuth_deg_list=[-180, 180], fovy_deg_list=[60, 80], radius_ratio_list=[1.0, 1.2], batch_size=2, render_resolution=512):
-    # obj_bbox: [2, 3], [x_min, y_min, z_min], [x_max, y_max, z_max]
-
-    x_min, y_min, z_min = obj_bbox[0]
-    x_max, y_max, z_max = obj_bbox[1]
-    obj_center = np.array([(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2])
-    lx, ly, lz = x_max - x_min, y_max - y_min, z_max - z_min
-    real_radius = np.sqrt(lx**2 + ly**2 + lz**2) / 2
-
-    min_elevation, max_elevation = elevation_deg_list[0], elevation_deg_list[1]
-    min_azimuth, max_azimuth = azimuth_deg_list[0], azimuth_deg_list[1]
-    min_fovy, max_fovy = fovy_deg_list[0], fovy_deg_list[1]
-    min_radius_ratio, max_radius_ratio = radius_ratio_list[0], radius_ratio_list[1]
-
-    poses = []
-    cur_cams = []
-
-    for _ in range(batch_size):
-
-        elevation_deg = np.random.randint(min_elevation, max_elevation)
-        azimuth_deg = np.random.randint(min_azimuth, max_azimuth)
-        radius = np.random.uniform(min_radius_ratio * real_radius, max_radius_ratio * real_radius)
-        fovy_deg = np.random.uniform(min_fovy, max_fovy)
-
-        # convert fovy_deg to radians
-        fovy = -np.deg2rad(fovy_deg)                     # TODO: need negative fovy for vertical FOV, need check whether this is correct
-        fovx = np.deg2rad(fovy_deg)
-
-        pose, cur_cam = get_pose_and_cam(elevation_deg, azimuth_deg, fovx=fovx, fovy=fovy, radius=radius, target=obj_center, render_resolution=render_resolution)
-        poses.append(pose)
-        cur_cams.append(cur_cam)
-
-        # add orthogonal viewpoints
-        delta_angle = 90
-        view_num = 360 // delta_angle
-        for view_i in range(1, view_num):
-            pose_i, cur_cam_i = get_pose_and_cam(elevation_deg, azimuth_deg + view_i * delta_angle, fovx=fovx, fovy=fovy, radius=radius, target=obj_center, render_resolution=render_resolution)
-            poses.append(pose_i)
-            cur_cams.append(cur_cam_i)
-
-    return poses, cur_cams
 
 def covisibility_check_by_gs(camera1, camera2, gaussians):
     """
@@ -1041,8 +1089,8 @@ def project_points_to_image(camera, points):
     R_w2c = R_c2w.T
 
     # Convert to tensors
-    T_w2c = torch.tensor(T_w2c, dtype=torch.float32).cuda()
-    R_w2c = torch.tensor(R_w2c, dtype=torch.float32).cuda()
+    T_w2c = to_tensor_safe(T_w2c)
+    R_w2c = to_tensor_safe(R_w2c)
     
     # Get camera frustum parameters
     image_height, image_width = camera.image_height, camera.image_width

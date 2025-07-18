@@ -17,7 +17,7 @@ from PIL import Image
 
 from utils.general_utils import safe_state
 
-from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose, generate_see3d_camera_by_lookat_object_centric, generate_random_perturbed_camera_poses
+from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose, generate_see3d_camera_by_lookat_object_centric, generate_random_perturbed_camera_poses, generate_interpolated_camera_poses, generate_look_around_camera_poses
 from guidance.See3D_modules.pcd_render_util import init_pcd_render_multiview, save_rendered_images, filter_pcd_by_edge, downsample_pcd, vis_depth
 
 from matcha.dm_scene.charts import load_charts_data, build_priors_from_charts_data, depths_to_points_parallel
@@ -44,7 +44,8 @@ if __name__ == "__main__":
     scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    train_viewpoints = scene.getTrainCameras().copy()             # all views
+    train_viewpoints = scene.getTrainCameras().copy()
+    input_view_num = len(train_viewpoints)
 
     see3d_render_path = os.path.join(args.source_path, 'see3d_render')
     os.makedirs(see3d_render_path, exist_ok=True)
@@ -94,10 +95,12 @@ if __name__ == "__main__":
 
     print(f'Train views render done!')
 
-    # gs_train_view_depths = np.array(train_view_depths)
-    # gs_train_view_depths = torch.from_numpy(gs_train_view_depths).cuda()
-    # gs_train_view_depths = gs_train_view_depths.unsqueeze(1)
-    # gs_train_view_points = depths_to_points_parallel(gs_train_view_depths, train_viewpoints)
+    input_view_depths = train_view_depths[:input_view_num]
+    input_viewpoints = train_viewpoints[:input_view_num]
+    gs_input_view_depths = np.array(input_view_depths)
+    gs_input_view_depths = torch.from_numpy(gs_input_view_depths).cuda()
+    gs_input_view_depths = gs_input_view_depths.unsqueeze(1)
+    gs_input_view_points = depths_to_points_parallel(gs_input_view_depths, input_viewpoints)
 
     # init visibility grid
     bbox_min = torch.min(gaussians.get_xyz, dim=0).values
@@ -107,14 +110,29 @@ if __name__ == "__main__":
     visibility_grid.vis_invisible_pnts(os.path.join(novel_views_save_root_path, 'invisible_points.ply'))
 
     # generate novel cameras
+    novel_poses, novel_cams = [], []
     if args.see3d_stage == 1:
-        novel_poses, novel_cams = generate_random_perturbed_camera_poses(train_viewpoints, visibility_grid, position_std=0.15, rotation_std=0.1)
-    elif args.see3d_stage == 2:
-        novel_poses, novel_cams = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid)
-    else:
-        novel_poses, novel_cams = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid)
-        # novel_poses, novel_cams = generate_see3d_camera_by_lookat(train_viewpoints, visibility_grid, gs_train_view_depths.squeeze(1), gs_train_view_points)
+        # interpolate between train_viewpoints
+        novel_poses_1, novel_cams_1 = generate_interpolated_camera_poses(train_viewpoints, visibility_grid, interpolate_num=20)
+        novel_poses.extend(novel_poses_1)
+        novel_cams.extend(novel_cams_1)
 
+        # generate random perturbed camera poses
+        novel_poses_2, novel_cams_2 = generate_random_perturbed_camera_poses(train_viewpoints, visibility_grid, position_std=0.15, rotation_std=0.1)
+        novel_poses.extend(novel_poses_2)
+        novel_cams.extend(novel_cams_2)
+    elif args.see3d_stage == 2:
+        # look at scene center
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid)
+        novel_poses.extend(novel_poses_1)
+        novel_cams.extend(novel_cams_1)
+
+        # look at scene around
+        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points)
+        novel_poses.extend(novel_poses_2)
+        novel_cams.extend(novel_cams_2)
+    else:
+        novel_poses, novel_cams = generate_look_around_camera_poses(input_viewpoints, visibility_grid, fovy_deg=80)
 
     # # vis train camera
     # train_c2ws = []
@@ -123,8 +141,8 @@ if __name__ == "__main__":
     #     c2w = np.linalg.inv(w2c)
     #     train_c2ws.append(c2w)
     # train_c2ws = np.array(train_c2ws)
-    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/priorgs/data/replica/scan6/gt_mesh/scene_mesh.ply'
-    # vis_camera_pose(novel_poses, mesh_path=temp_mesh_path)
+    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/merge/priorgs-merge-total/data/test-replica/scan6/gt_mesh/scene_mesh.ply'
+    # vis_camera_pose(interpolate_novel_poses, mesh_path=temp_mesh_path)
     # # vis_camera_pose(train_c2ws, mesh_path=temp_mesh_path)
     # exit()
 
@@ -135,6 +153,7 @@ if __name__ == "__main__":
 
     gs_depths = []
     gs_none_visible_rate = []
+    alpha_list = []
     for idx, novel_cam in enumerate(novel_cams):
 
         render_pkg = render(novel_cam, gaussians, pipe, background)
@@ -149,6 +168,7 @@ if __name__ == "__main__":
         # save .npy
         np.save(os.path.join(gs_output_dir, f'alpha_{idx:06d}.npy'), alpha[0].detach().cpu().numpy())
         alpha_vis_mask = alpha[0].detach().cpu().numpy() > alpha_vis_thresh
+        alpha_list.append(alpha_vis_mask)
 
         none_visible_rate = 1 - alpha_vis_mask.sum() / (alpha_vis_mask.shape[0] * alpha_vis_mask.shape[1])
         gs_none_visible_rate.append(none_visible_rate)
@@ -168,7 +188,11 @@ if __name__ == "__main__":
         rgb_image = Image.open(rgb_path)
         rgb_image = np.array(rgb_image)
 
-        vis_map = visibility_maps[idx].detach().cpu().numpy()
+        vis_map = visibility_maps[idx].detach().cpu().numpy() > 0.5
+        alpha_map = alpha_list[idx]
+        vis_map = vis_map & alpha_map                            # filter vis_map by alpha_map
+        vis_map = vis_map.astype(np.float32)
+
         none_visible_rate = 1 - vis_map.sum() / (vis_map.shape[0] * vis_map.shape[1])
         grid_none_visible_rate.append(none_visible_rate)
 
@@ -183,7 +207,7 @@ if __name__ == "__main__":
 
     print(f'Render visibility map done!')
 
-    need_inpaint_views = select_need_inpaint_views(novel_cams, grid_none_visible_rate, gaussians, int(args.select_inpaint_num), none_visible_rate_high_bound=0.6)
+    need_inpaint_views = select_need_inpaint_views(novel_cams, grid_none_visible_rate, gaussians, int(args.select_inpaint_num), none_visible_rate_high_bound=0.5, covisible_rate_high_bound=0.9)
     print(f'Need inpaint views: {need_inpaint_views}')
 
     select_gs_output_dir = os.path.join(novel_views_save_root_path, 'select-gs')

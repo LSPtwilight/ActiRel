@@ -87,7 +87,6 @@ cd mast3r/asmk/cython
 cythonize *.pyx
 cd ..
 pip install .
-cd ..
 cd ../dust3r/croco/models/curope/
 python setup.py build_ext --inplace
 cd ../../../../../

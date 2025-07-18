@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.append(os.getcwd())
 sys.path.append(os.path.join(os.getcwd(), '2d-gaussian-splatting'))
+from utils.general_utils import seed_everything
 from scene.dataset_readers import load_see3d_cameras
 import numpy as np
 from PIL import Image
@@ -41,18 +42,37 @@ if __name__ == '__main__':
     parser.add_argument('--plane_root_dir', type=str)
     parser.add_argument("--see3d_stage", required=True, type=int)                 # 1: perturb input views, 2: interpolate input views, 3: random search
     parser.add_argument("--none_replace", action='store_true')
+    parser.add_argument("--none_difix", action='store_true')
     args = parser.parse_args()
+
+    seed_everything()
 
     see3d_root_dir = os.path.join(args.source_path, 'see3d_render')
     cur_see3d_root_dir = os.path.join(see3d_root_dir, f'stage{args.see3d_stage}')
-    warp_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs')
     inpaint_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs-inpainted')
     save_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs-inpainted-merged')
 
-    # 1. replace inpaint results
-    if not args.none_replace:
-        replace_inpaint_results(warp_root_dir, inpaint_root_dir, save_root_dir)
-        print(f'See3D stage {args.see3d_stage} replace inpaint results done!')
+    if not args.none_difix:
+        warp_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs-difix')
+        temp_save_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs-inpainted-merged-temp')
+        # 1. replace inpaint results
+        if not args.none_replace:
+            replace_inpaint_results(warp_root_dir, inpaint_root_dir, temp_save_root_dir)
+            print(f'See3D stage {args.see3d_stage} replace inpaint results done!')
+        
+        # (post difix3d) use difix3d to remove degradation in warp frame
+        command = f"python 2d-gaussian-splatting/guidance/difix3d_util_post.py --input_dir {temp_save_root_dir} --output_dir {save_root_dir}"
+        os.system(command)
+        print(f'See3D stage {args.see3d_stage} difix3d post done!')
+        
+    else:
+        warp_root_dir = os.path.join(cur_see3d_root_dir, 'select-gs')
+        # 1. replace inpaint results
+        if not args.none_replace:
+            replace_inpaint_results(warp_root_dir, inpaint_root_dir, save_root_dir)
+            print(f'See3D stage {args.see3d_stage} replace inpaint results done!')
+        
+        print(f'See3D stage {args.see3d_stage} not use difix3d!')
 
     # 2. copy inpaint results to all inpaint folder (NOTE: begin_idx is id in all inpaint images)
     all_inpaint_image_dir = os.path.join(see3d_root_dir, 'inpainted_images')

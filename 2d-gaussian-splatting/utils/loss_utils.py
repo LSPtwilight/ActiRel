@@ -17,6 +17,12 @@ from math import exp
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
+def l1_loss_with_conf(network_output, gt, conf):
+    diff = torch.abs((network_output - gt))
+    masked_diff = diff * conf
+    # Use sum of confidence as denominator instead of total number of pixels
+    return masked_diff.sum() / (conf.sum() + 1e-8)  # Add small epsilon to avoid division by zero
+
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 

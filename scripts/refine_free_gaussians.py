@@ -26,6 +26,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', type=str, default='default')
 
     parser.add_argument('--refine_depth_path', type=str, default=None, help='Path to the refine depth directory')
+    parser.add_argument('--use_downsample_gaussians', action='store_true', help='Use downsample gaussians')
     
     args = parser.parse_args()
     
@@ -93,6 +94,7 @@ if __name__ == '__main__':
             "--depthanything_encoder", args.depthanything_encoder,
             "--dense_regul", args.dense_regul,
             "--refine_depth_path", args.refine_depth_path,
+            "--use_downsample_gaussians" if args.use_downsample_gaussians else "",
         ])
     
     # Run command
