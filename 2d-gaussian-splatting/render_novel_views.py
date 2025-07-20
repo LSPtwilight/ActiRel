@@ -14,6 +14,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams, get_combi
 from utils.render_utils import save_img_f32, save_img_u8
 from tqdm import tqdm
 from PIL import Image
+import trimesh
 
 from utils.general_utils import safe_state
 
@@ -123,12 +124,12 @@ if __name__ == "__main__":
         novel_cams.extend(novel_cams_2)
     elif args.see3d_stage == 2:
         # look at scene center
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 
         # look at scene around
-        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points)
+        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points, n_frames=40)
         novel_poses.extend(novel_poses_2)
         novel_cams.extend(novel_cams_2)
     else:
@@ -213,6 +214,30 @@ if __name__ == "__main__":
     select_gs_output_dir = os.path.join(novel_views_save_root_path, 'select-gs')
     os.makedirs(select_gs_output_dir, exist_ok=True)
     need_inpaint_views_cams = [novel_cams[i] for i in need_inpaint_views]
+    need_inpaint_views_depths = [gs_depths[i] for i in need_inpaint_views]
+    need_inpaint_views_depths = torch.stack(need_inpaint_views_depths, dim=0)
+
+    # get need inpaint views points
+    invalid_depth_mask = need_inpaint_views_depths <= 1e-6
+    need_inpaint_views_depths[invalid_depth_mask] = 1e-3
+    need_inpaint_views_points = depths_to_points_parallel(need_inpaint_views_depths, need_inpaint_views_cams)
+
+    # # vis each view need inpaint views points
+    # for idx in range(len(need_inpaint_views_cams)):
+    #     vis_points = (need_inpaint_views_points[idx].cpu().numpy()).reshape(-1, 3)
+    #     invalid_points_mask = (invalid_depth_mask[idx].cpu().numpy()).reshape(-1)
+    #     vis_points = vis_points[~invalid_points_mask]
+    #     trimesh.PointCloud(vis_points).export(os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_need_inpaint_views_points_frame{idx:06d}.ply'))
+
+    need_inpaint_views_points = need_inpaint_views_points.reshape(-1, 3)
+    invalid_depth_mask_flatten = invalid_depth_mask.reshape(-1)
+    need_inpaint_views_points = need_inpaint_views_points[~invalid_depth_mask_flatten]
+    
+    # save need inpaint views points
+    need_inpaint_views_points_path = os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_need_inpaint_views_points.ply')
+    trimesh.PointCloud(need_inpaint_views_points.cpu().numpy()).export(need_inpaint_views_points_path)
+    print(f'Saved need inpaint views points to {need_inpaint_views_points_path}')
+
     # save need inpaint views cameras
     save_cameras = {}
     save_cameras['train_views'] = len(train_viewpoints)

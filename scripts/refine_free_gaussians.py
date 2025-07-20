@@ -7,6 +7,14 @@ import yaml
 
 from rich.console import Console
 
+def run_command_safe(command):
+    print(f"Running command: {command}")
+    exit_code = os.system(command)
+    if exit_code != 0:
+        print("Command failed!")
+        sys.exit(1)
+    else:
+        print("Command succeeded!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -99,4 +107,4 @@ if __name__ == '__main__':
     
     # Run command
     CONSOLE.print(f"[INFO] Running command:\n{command}")
-    os.system(command)
+    run_command_safe(command)

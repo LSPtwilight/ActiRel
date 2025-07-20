@@ -10,6 +10,15 @@ from argparse import ArgumentParser
 import shutil
 
 
+def run_command_safe(command):
+    print(f"Running command: {command}")
+    exit_code = os.system(command)
+    if exit_code != 0:
+        print("Command failed!")
+        sys.exit(1)
+    else:
+        print("Command succeeded!")
+
 def replace_inpaint_results(warp_root_dir, inpaint_root_dir, save_root_dir):
     os.makedirs(save_root_dir, exist_ok=True)
     inpaint_img_list = os.listdir(inpaint_root_dir)
@@ -62,7 +71,7 @@ if __name__ == '__main__':
         
         # (post difix3d) use difix3d to remove degradation in warp frame
         command = f"python 2d-gaussian-splatting/guidance/difix3d_util_post.py --input_dir {temp_save_root_dir} --output_dir {save_root_dir}"
-        os.system(command)
+        run_command_safe(command)
         print(f'See3D stage {args.see3d_stage} difix3d post done!')
         
     else:
@@ -160,6 +169,9 @@ if __name__ == '__main__':
         shutil.copy(os.path.join(cur_plane_root_dir, f'plane_vis_frame{i:06d}.png'), os.path.join(plane_root_dir, f'plane_vis_frame{begin_plane_idx:06d}.png'))
 
         begin_plane_idx += 1
+
+    # copy need inpaint views points
+    shutil.copy(os.path.join(cur_see3d_root_dir, f'stage{args.see3d_stage}_need_inpaint_views_points.ply'), os.path.join(plane_root_dir, f'stage{args.see3d_stage}_need_inpaint_views_points.ply'))
 
     print(f'See3D stage {args.see3d_stage} merge geometry cues done!')
 

@@ -3,6 +3,14 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 
+def run_command_safe(command):
+    print(f"Running command: {command}")
+    exit_code = os.system(command)
+    if exit_code != 0:
+        print("Command failed!")
+        sys.exit(1)
+    else:
+        print("Command succeeded!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -17,7 +25,7 @@ if __name__ == '__main__':
 
     # 1. render novel views
     command = f"python 2d-gaussian-splatting/render_novel_views.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_stage {args.see3d_stage} --select_inpaint_num {args.select_inpaint_num}"
-    os.system(command)
+    run_command_safe(command)
 
     ref_image_path = os.path.join(args.source_path, 'see3d_render', 'ref-views')
     warp_image_path = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs')
@@ -27,28 +35,28 @@ if __name__ == '__main__':
         # (pre difix3d) use difix3d to remove degradation in warp frame
         difix3d_warp_image_path = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs-difix')
         command = f"python 2d-gaussian-splatting/guidance/difix3d_util_pre.py --input_dir {warp_image_path} --output_dir {difix3d_warp_image_path}"
-        os.system(command)
+        run_command_safe(command)
         warp_image_path = difix3d_warp_image_path
 
     # 2. inpaint rgb
     command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir}"
-    os.system(command)
+    run_command_safe(command)
 
     # 3. generate depth and normal
     command = f"python 2d-gaussian-splatting/guidance/see3d_dn_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage}"
-    os.system(command)
+    run_command_safe(command)
 
     # 4. generate 2D planes
     cur_plane_root_dir = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs-planes')
     command = f'python 2d-gaussian-splatting/planes/plane_excavator.py --plane_root_path {cur_plane_root_dir}'
-    os.system(command)
+    run_command_safe(command)
 
     # 5. merge results
     if not args.none_difix:
         command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir}"
-        os.system(command)
+        run_command_safe(command)
     else:
         command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir} --none_difix"
-        os.system(command)
+        run_command_safe(command)
 
     print(f'See3D stage {args.see3d_stage} inpaint done!')

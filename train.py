@@ -5,6 +5,15 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 
+def run_command_safe(command):
+    print(f"Running command: {command}")
+    exit_code = os.system(command)
+    if exit_code != 0:
+        print("Command failed!")
+        sys.exit(1)
+    else:
+        print("Command succeeded!")
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     
@@ -236,40 +245,40 @@ if __name__ == '__main__':
     t1 = time.time()
     
     # run MAtCha training
-    os.system(sfm_command)
-    os.system(align_charts_command)
+    run_command_safe(sfm_command)
+    run_command_safe(align_charts_command)
 
     # generate 2D planes + refine depth for input views + init gaussian training
-    os.system(render_charts_command)
-    os.system(generate_2Dplane_command)
-    os.system(plane_refine_depth_command)
-    os.system(refine_free_gaussians_command)
+    run_command_safe(render_charts_command)
+    run_command_safe(generate_2Dplane_command)
+    run_command_safe(plane_refine_depth_command)
+    run_command_safe(refine_free_gaussians_command)
 
     # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
-    os.system(get_see3d_inpaint_command(1, args.select_inpaint_num))
-    os.system(plane_refine_depth_command_2)
+    run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
+    run_command_safe(plane_refine_depth_command_2)
     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
-    os.system(mv_cmd)
-    os.system(refine_free_gaussians_command)
+    run_command_safe(mv_cmd)
+    run_command_safe(refine_free_gaussians_command)
 
     # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
-    os.system(get_see3d_inpaint_command(2, args.select_inpaint_num))
-    os.system(plane_refine_depth_command_2)
+    run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
+    run_command_safe(plane_refine_depth_command_2)
     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
-    os.system(mv_cmd)
-    os.system(refine_free_gaussians_command)
+    run_command_safe(mv_cmd)
+    run_command_safe(refine_free_gaussians_command)
 
     # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
-    os.system(get_see3d_inpaint_command(3, args.select_inpaint_num))
-    os.system(plane_refine_depth_command_2)
+    run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
+    run_command_safe(plane_refine_depth_command_2)
     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
-    os.system(mv_cmd)
-    os.system(refine_free_gaussians_command)
+    run_command_safe(mv_cmd)
+    run_command_safe(refine_free_gaussians_command)
 
     # render all images, export mesh, and evaluate
-    os.system(render_all_img_command)
-    os.system(tetra_command)
-    os.system(eval_command)
+    run_command_safe(render_all_img_command)
+    run_command_safe(tetra_command)
+    run_command_safe(eval_command)
 
     # # vis global 3D plane by mesh
     # mesh_list = os.listdir(tetra_meshes_path)
@@ -286,7 +295,7 @@ if __name__ == '__main__':
     #     "--see3d_root_path", see3d_root_path,
     #     "--output_path", os.path.join(args.output_path, 'vis_global_plane_color_mesh.ply'),
     # ])
-    # os.system(vis_global_3Dplane_by_mesh_command)
+    # run_command_safe(vis_global_3Dplane_by_mesh_command)
 
     t2 = time.time()
     print(f"Total running time: {t2 - t1} seconds")

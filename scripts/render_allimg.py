@@ -5,6 +5,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 
+def run_command_safe(command):
+    print(f"Running command: {command}")
+    exit_code = os.system(command)
+    if exit_code != 0:
+        print("Command failed!")
+        sys.exit(1)
+    else:
+        print("Command succeeded!")
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     
@@ -26,4 +35,4 @@ if __name__ == '__main__':
     
     # Run command
     print(render_command)
-    os.system(render_command)
+    run_command_safe(render_command)

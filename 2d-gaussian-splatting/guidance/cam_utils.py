@@ -1117,7 +1117,7 @@ def project_points_to_image(camera, points):
 
     return points_depth, points_2d, in_image
 
-def get_pixel_to_points_tensor(camera, points, use_depth_threshold=False, depth_thresh = 0.01):
+def get_pixel_to_points_tensor(camera, points, use_depth_threshold=True, depth_thresh = 0.01):
     """
     Get pixel-to-points mapping using tensor operations (more efficient version)
     
@@ -1154,7 +1154,7 @@ def get_pixel_to_points_tensor(camera, points, use_depth_threshold=False, depth_
     
     # Find unique pixel indices and their counts
     unique_pixels, pixel_counts = torch.unique_consecutive(sorted_pixel_indices, return_counts=True)
-    max_points_per_pixel = pixel_counts.max().item()
+    max_points_per_pixel = min(pixel_counts.max().item(), 500)
     
     # Create output tensors
     pixel_map = torch.zeros((H, W, max_points_per_pixel), dtype=torch.int, device=device)

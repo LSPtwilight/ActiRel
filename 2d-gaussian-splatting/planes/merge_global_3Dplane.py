@@ -298,6 +298,15 @@ if __name__ == "__main__":
         pnts_i = torch.tensor(pnts_i, dtype=torch.float32).cuda()
         pnts_list.append(pnts_i)
 
+    # load need inpaint views points (this stage seen points)
+    need_inpaint_points_file_name = [file for file in file_list if 'need_inpaint_views_points' in file]
+    need_inpaint_points_file_name.sort()
+    for need_inpaint_points_file_name_i in need_inpaint_points_file_name:
+        pnts_path = os.path.join(plane_root_path, need_inpaint_points_file_name_i)          # this stage seen points
+        pnts_i = trimesh.load(pnts_path).vertices
+        pnts_i = torch.tensor(pnts_i, dtype=torch.float32).cuda()
+        pnts_list.append(pnts_i)
+
     if len(pnts_list) == 0:
         # load default chart pnts
         pnts_path = args.pnts_path

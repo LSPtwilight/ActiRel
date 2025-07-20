@@ -247,7 +247,7 @@ if __name__ == "__main__":
     normal_list.sort()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    config = PlaneExcavatorConfig()
+    config = PlaneExcavatorConfig(min_size_ratio=0.01)
     plane_excavator = PlaneExcavator(config, device, img_height, img_width, use_normal_estimator=args.use_normal_estimator)
 
     if args.use_normal_estimator:

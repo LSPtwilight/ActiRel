@@ -3,6 +3,14 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 
+def run_command_safe(command):
+    print(f"Running command: {command}")
+    exit_code = os.system(command)
+    if exit_code != 0:
+        print("Command failed!")
+        sys.exit(1)
+    else:
+        print("Command succeeded!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -24,21 +32,21 @@ if __name__ == '__main__':
             command = f"python 2d-gaussian-splatting/planes/merge_global_3Dplane.py --source_path {args.source_path} --pnts_path {args.pnts_path} --plane_root_path {args.plane_root_path} --vis_plane_path {args.vis_plane_path}"
         else:
             command = f"python 2d-gaussian-splatting/planes/merge_global_3Dplane.py --source_path {args.source_path} --pnts_path {args.pnts_path} --plane_root_path {args.plane_root_path}"
-    os.system(command)
+    run_command_safe(command)
 
     # refine depth with planes
     if args.see3d_root_path is not None:
         command = f"python 2d-gaussian-splatting/planes/refine_depth_with_planes.py --source_path {args.source_path} --plane_root_path {args.plane_root_path} --see3d_root_path {args.see3d_root_path}"
     else:
         command = f"python 2d-gaussian-splatting/planes/refine_depth_with_planes.py --source_path {args.source_path} --plane_root_path {args.plane_root_path}"
-    os.system(command)
+    run_command_safe(command)
 
     # get confident map
     if args.see3d_root_path is not None:
         command = f"python 2d-gaussian-splatting/guidance/inconsistence_solver.py --source_path {args.source_path} --plane_root_path {args.plane_root_path} --see3d_root_path {args.see3d_root_path}"
     else:
         command = f"python 2d-gaussian-splatting/guidance/inconsistence_solver.py --source_path {args.source_path} --plane_root_path {args.plane_root_path}"
-    os.system(command)
+    run_command_safe(command)
 
     print('Plane refine depth done!')
 
