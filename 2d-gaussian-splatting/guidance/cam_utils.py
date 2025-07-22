@@ -601,6 +601,74 @@ def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, t
 
     return new_poses, cur_cams
 
+def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
+    """
+    Generate see3d camera by view angle.
+    """
+    # get fovy and fovx
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    train_cam_centers = torch.stack([cam.camera_center for cam in train_cams], dim=0)
+    x_range = (train_cam_centers[:, 0].max() - train_cam_centers[:, 0].min()) / 2.0
+    y_range = (train_cam_centers[:, 1].max() - train_cam_centers[:, 1].min()) / 2.0
+    z_range = (train_cam_centers[:, 2].max() - train_cam_centers[:, 2].min()) / 2.0
+
+    # get traj center
+    if traj_center is None:
+        traj_center = torch.mean(train_cam_centers, dim=0)
+
+    device = traj_center.device
+
+    # NOTE: hard code for range scale
+    x_range_scale = [0.4, 0.9]
+    y_range_scale = [0.4, 0.9]
+    z_range_scale = [0.1, 0.3]
+
+    # generate novel camera center
+    theta = torch.linspace(0, 2.0 * torch.pi, n_frames + 1, device=device)
+    novel_cam_centers = torch.stack([
+        (torch.rand(n_frames+1, device=device) * (x_range_scale[1] - x_range_scale[0]) + x_range_scale[0]) * x_range * torch.cos(theta) + traj_center[0],
+        (torch.rand(n_frames+1, device=device) * (y_range_scale[1] - y_range_scale[0]) + y_range_scale[0]) * y_range * torch.sin(theta) + traj_center[1],
+        (torch.rand(n_frames+1, device=device) * (z_range_scale[1] - z_range_scale[0]) + z_range_scale[0]) * z_range * torch.cos(theta) + traj_center[2],
+    ], dim=-1)
+    novel_cam_centers = novel_cam_centers[:-1]          # Throw away duplicated last position.
+
+    # check valid novel camera center
+    novel_cam_centers = torch.tensor(novel_cam_centers, dtype=torch.float32, device=device)
+    valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+    novel_cam_centers = novel_cam_centers[valid_mask]
+
+    vec = traj_center - novel_cam_centers  # [N, 3]
+    norm = torch.norm(vec, dim=-1, keepdim=True)
+    vec_norm = vec / (norm + 1e-8)
+    azimuths = torch.atan2(vec_norm[:, 1], vec_norm[:, 0])  # [N]
+    elevations = torch.asin(vec_norm[:, 2])                 # [N]
+
+    delta_azimuth_degs = torch.rand(novel_cam_centers.shape[0], device=device) * 20 - 10  # [-10, 10]
+    delta_azimuths = torch.deg2rad(delta_azimuth_degs)
+    azimuths_perturbeds = azimuths + delta_azimuths
+
+    delta_elevation_degs = torch.rand(novel_cam_centers.shape[0], device=device) * 60 - 55  # [-55, 5]
+    delta_elevations = torch.deg2rad(delta_elevation_degs)
+    elevations_perturbeds = elevations + delta_elevations
+
+    new_poses = []
+    cur_cams = []
+    assert width == height
+    render_resolution = width
+    for idx in range(len(novel_cam_centers)):
+        
+        cam_center = novel_cam_centers[idx]
+        azimuth_perturbed = torch.rad2deg(azimuths_perturbeds[idx])
+        elevation_perturbed = torch.rad2deg(elevations_perturbeds[idx])
+
+        pose, cam = get_pose_and_cam(elevation_perturbed.cpu().numpy(), azimuth_perturbed.cpu().numpy(), fovx, fovy, cam_center.cpu().numpy(), render_resolution=render_resolution)
+        new_poses.append(pose)
+        cur_cams.append(cam)
+
+    return new_poses, cur_cams
+
 def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, select_num=10, none_visible_rate_low_bound=0.05, none_visible_rate_high_bound=0.5, covisible_rate_high_bound=0.8):
     """
     Select views that need inpainting
@@ -939,7 +1007,7 @@ def generate_random_sample_cameras(selected_cams, visibility_grid, train_cams, m
 
     return new_poses, cur_cams
 
-def generate_look_around_camera_poses(train_cams, visibility_grid, azimuth_bin=6, elevation_bin=8, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_look_around_camera_poses(train_cams, visibility_grid, azimuth_bin=10, elevation_bin=5, width=512, height=512, fovy_deg=60, fovx_deg=None):
     """
     Generate look around camera poses.
     """
@@ -978,7 +1046,7 @@ def generate_look_around_camera_poses(train_cams, visibility_grid, azimuth_bin=6
 
     # generate look around camera poses
     azimuth_list = np.linspace(-180, 180, azimuth_bin)
-    elevation_list = np.linspace(-70, 70, elevation_bin)
+    elevation_list = np.linspace(-30, 5, elevation_bin)
 
     new_poses = []
     cur_cams = []

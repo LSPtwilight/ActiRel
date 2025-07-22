@@ -140,14 +140,11 @@ def training(
     print("[WARNING] Confidence values are not being subtracted by 1.0 as in the original implementation.")
     print("Minimum confidence: ", charts_data['confs'].min())
     print("Maximum confidence: ", charts_data['confs'].max())
-    # create_gaussians_from_charts_data = True
 
-    create_gaussians_from_charts_data = False
     create_gaussians_from_pda_depth = True          # pda: prior depth anything
     print(f'WARNING: PDA depth root path: {refine_depth_path}')
     pda_depths = []
     pda_points_list = []
-    pda_points_colors_list = []
     pda_confident_maps_list = []
 
     input_view_num = len(scene.getTrainCameras())
@@ -164,14 +161,6 @@ def training(
         pda_point = trimesh.load(pda_point_path)
         pda_point = np.array(pda_point.vertices)
         pda_points_list.append(pda_point)
-
-        pda_point_colors_path = os.path.join(refine_depth_path, f'rgb_frame{idx:06d}.png')
-        pda_point_colors = cv2.imread(pda_point_colors_path)
-        pda_point_colors = cv2.cvtColor(pda_point_colors, cv2.COLOR_BGR2RGB)
-        pda_point_colors = pda_point_colors / 255.0
-        pda_point_colors = pda_point_colors.astype(np.float32)
-        pda_point_colors = pda_point_colors.reshape(-1, 3)
-        pda_points_colors_list.append(pda_point_colors)
 
         pda_confident_map_path = os.path.join(refine_depth_path, f'confident_map_frame{idx:06d}.png')
         pda_confident_map = Image.open(pda_confident_map_path)

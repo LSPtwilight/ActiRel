@@ -164,13 +164,9 @@ if __name__ == "__main__":
     # Get visibility matrix for these points: (num_none_seen, num_views)
     point_vis_matrix = point_visibility[none_seen_indices]  # (num_none_seen, num_views)
     
-    # Convert boolean visibility to probabilities for multinomial sampling
-    # Add small epsilon to avoid zero probabilities
-    vis_probs = point_vis_matrix.float() + 1e-8
-    vis_probs = vis_probs / vis_probs.sum(dim=1, keepdim=True)
-    
-    # Use multinomial to sample one view per point in parallel
-    selected_view_indices = torch.multinomial(vis_probs, num_samples=1).squeeze(-1)
+    # Find the first visible view for each point
+    # argmax will return the index of the first True value (since True > False)
+    selected_view_indices = torch.argmax(point_vis_matrix.float(), dim=1)
     
     # Get coordinates for all selected views (batch operation)
     selected_coords = point_coords[none_seen_indices, selected_view_indices]  # (num_none_seen, 2)
@@ -231,28 +227,27 @@ if __name__ == "__main__":
                     # Get assigned colors for these points
                     assigned_colors = point_colors[not_in_input_indices]  # (num_not_in_input, 3)
                     
-                    # Get actual colors of these points in current view
-                    actual_colors = rgb_images[view_idx][v_coords[not_in_input_mask], u_coords[not_in_input_mask]]  # (num_not_in_input, 3)
-                    
-                    # Convert actual colors to uint8 format for comparison
-                    actual_colors_uint8 = (actual_colors * 255).to(torch.uint8)
-                    
-                    # Calculate color difference (using tolerance comparison)
-                    color_diff = torch.abs(assigned_colors.float() - actual_colors_uint8.float())  # (num_not_in_input, 3)
-                    
-                    # Check if all channel differences are within tolerance
-                    color_match = torch.all(color_diff <= color_eps, dim=1)  # (num_not_in_input,)
-                    
-                    # Set confident based on color matching results
-                    confident_values = color_match.to(torch.uint8)
-                    confident_map[v_coords[not_in_input_mask], u_coords[not_in_input_mask]] = confident_values
-                    
-                    # Statistics
-                    num_matched = torch.sum(color_match).item()
-                    num_total = len(not_in_input_indices)
-                    print(f'See3D view {view_idx}: {num_matched}/{num_total} points color matched successfully')
+                    # Set assigned colors to original color
+                    rgb_images[view_idx][v_coords[not_in_input_mask], u_coords[not_in_input_mask]] = assigned_colors / 255.0
             
             confident_maps[view_idx] = confident_map
+
+    # save rgb images
+    old_inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images_ori')
+    if os.path.exists(old_inpaint_root_dir):
+        os.system(f'rm -rf {old_inpaint_root_dir}')
+    os.rename(inpaint_root_dir, old_inpaint_root_dir)
+    os.makedirs(inpaint_root_dir, exist_ok=True)
+    for view_idx in range(num_views):
+        if view_idx < input_view_num:
+            continue
+
+        save_view_idx = view_idx - input_view_num               # inpaint images use see3d images index
+        rgb_path = os.path.join(inpaint_root_dir, f'predict_warp_frame{save_view_idx:06d}.png')
+        rgb_map = rgb_images[view_idx].cpu().numpy() * 255
+        rgb_map = Image.fromarray(rgb_map.astype(np.uint8))
+        rgb_map.save(rgb_path)
+        print(f'Saved assigned rgb image for view {view_idx} to {rgb_path}')
 
     # Save confident maps
     print(f'********** save confident maps **********')

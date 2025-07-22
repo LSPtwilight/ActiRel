@@ -366,13 +366,13 @@ def marching_tetrahedra_with_binary_search(
             vertex_colors=None
         mesh = trimesh.Trimesh(vertices=points.cpu().numpy(), faces=faces, vertex_colors=vertex_colors, process=False)
         
-        # filter
-        if filter_mesh:
-            mask = (distance <= scale).cpu().numpy()
-            face_mask = mask[faces].all(axis=1)
-            mesh.update_vertices(mask)
-            mesh.update_faces(face_mask)
-            print("[INFO] Filtering mesh with distance <= scale")
+        # # filter
+        # if filter_mesh:
+        #     mask = (distance <= scale).cpu().numpy()
+        #     face_mask = mask[faces].all(axis=1)
+        #     mesh.update_vertices(mask)
+        #     mesh.update_faces(face_mask)
+        #     print("[INFO] Filtering mesh with distance <= scale")
         
         mesh.export(os.path.join(render_path, f"tetra_mesh_binary_search_{step}_iter_{iteration}.ply"))
 

@@ -18,12 +18,19 @@ import trimesh
 
 from utils.general_utils import safe_state
 
-from guidance.cam_utils import generate_see3d_camera_by_lookat, select_need_inpaint_views, vis_camera_pose, generate_see3d_camera_by_lookat_object_centric, generate_random_perturbed_camera_poses, generate_interpolated_camera_poses, generate_look_around_camera_poses
-from guidance.See3D_modules.pcd_render_util import init_pcd_render_multiview, save_rendered_images, filter_pcd_by_edge, downsample_pcd, vis_depth
+from guidance.cam_utils import (
+    generate_see3d_camera_by_lookat, 
+    select_need_inpaint_views, 
+    vis_camera_pose, 
+    generate_see3d_camera_by_lookat_object_centric, 
+    generate_random_perturbed_camera_poses, 
+    generate_interpolated_camera_poses, 
+    generate_look_around_camera_poses, 
+    generate_see3d_camera_by_view_angle
+)
 
-from matcha.dm_scene.charts import load_charts_data, build_priors_from_charts_data, depths_to_points_parallel
+from matcha.dm_scene.charts import depths_to_points_parallel
 
-from guidance.cam_utils import build_visibility_masks_2
 from guidance.vis_grid import VisibilityGrid
 
 if __name__ == "__main__":
@@ -133,7 +140,15 @@ if __name__ == "__main__":
         novel_poses.extend(novel_poses_2)
         novel_cams.extend(novel_cams_2)
     else:
-        novel_poses, novel_cams = generate_look_around_camera_poses(input_viewpoints, visibility_grid, fovy_deg=80)
+        # look around in input views position
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=80, n_frames=60)
+        novel_poses.extend(novel_poses_1)
+        novel_cams.extend(novel_cams_1)
+
+        # # look around in scene center
+        # novel_poses_2, novel_cams_2 = generate_look_around_camera_poses(input_viewpoints, visibility_grid, fovy_deg=80)
+        # novel_poses.extend(novel_poses_2)
+        # novel_cams.extend(novel_cams_2)
 
     # # vis train camera
     # train_c2ws = []
@@ -142,7 +157,7 @@ if __name__ == "__main__":
     #     c2w = np.linalg.inv(w2c)
     #     train_c2ws.append(c2w)
     # train_c2ws = np.array(train_c2ws)
-    # temp_mesh_path = '/home/nijunfeng/mycode/project/gs-recon/merge/priorgs-merge-total/data/test-replica/scan6/gt_mesh/scene_mesh.ply'
+    # temp_mesh_path = './data/test-replica/scan6/gt_mesh/scene_mesh.ply'
     # vis_camera_pose(interpolate_novel_poses, mesh_path=temp_mesh_path)
     # # vis_camera_pose(train_c2ws, mesh_path=temp_mesh_path)
     # exit()
