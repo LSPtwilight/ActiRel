@@ -1,0 +1,15 @@
+# 1. Align the tilted camera pose after colmap to y-down coordinate system
+colmap model_orientation_aligner \
+    --input_path /home/nijunfeng/mycode/project/gs-recon/MAtCha/output/replica/scan3/mast3r_sfm/sparse/0 \
+    --output_path /home/nijunfeng/mycode/project/gs-recon/MAtCha/output/replica/scan3/mast3r_sfm/sparse/y-down \
+    --method MANHATTAN-WORLD \
+    --image_path /home/nijunfeng/mycode/project/gs-recon/MAtCha/output/replica/scan3/mast3r_sfm/images/
+
+# 2. Transform from y-down to z-up
+python colmap/y_down_to_z_up.py --model_dir /home/nijunfeng/mycode/project/gs-recon/MAtCha/output/replica/scan3/mast3r_sfm/sparse/y-down
+
+# 3. Convert aligned colmap format data to traj.txt (for Replica scan3)
+python mycode/align_replica_scan3/colmap2traj.py
+
+# 4. Align gt mesh
+python colmap/align_gt_mesh.py

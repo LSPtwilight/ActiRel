@@ -157,8 +157,8 @@ if __name__ == "__main__":
     #     c2w = np.linalg.inv(w2c)
     #     train_c2ws.append(c2w)
     # train_c2ws = np.array(train_c2ws)
-    # temp_mesh_path = './data/test-replica/scan6/gt_mesh/scene_mesh.ply'
-    # vis_camera_pose(interpolate_novel_poses, mesh_path=temp_mesh_path)
+    # temp_mesh_path = './data/replica/scan5/gt_mesh/scene_mesh.ply'
+    # vis_camera_pose(novel_poses, mesh_path=temp_mesh_path)
     # # vis_camera_pose(train_c2ws, mesh_path=temp_mesh_path)
     # exit()
 

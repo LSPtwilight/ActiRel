@@ -378,7 +378,7 @@ def training(
         gt_image = viewpoint_cam.original_image.cuda()
         if viewpoint_idx >= input_view_num:                     # see3d view
             rgb_current_conf = total_confs_list[viewpoint_idx]
-            Ll1 = l1_loss_with_conf(image, gt_image, rgb_current_conf)
+            Ll1 = l1_loss_with_conf(image, gt_image, rgb_current_conf) * 0.01
             loss = Ll1
         else:
             Ll1 = l1_loss(image, gt_image)

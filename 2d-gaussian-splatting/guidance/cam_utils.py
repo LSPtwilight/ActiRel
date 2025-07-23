@@ -826,11 +826,21 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
     novel_cam_centers = novel_cam_centers[:-1]          # Throw away duplicated last position.
 
     # NOTE: hard code to make the camera look at ground
+    origin_train_cam_centers = train_cam_centers.clone()
     max_z = train_cam_centers[:, 2].max()
     novel_cam_centers[:, 2] = max_z
     
     # check valid camera center
     valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+    if valid_mask.sum() == 0:
+        print("No valid camera centers found. Using original camera centers.")
+        novel_cam_centers = origin_train_cam_centers
+        valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+
+        if valid_mask.sum() == 0:
+            print("No valid camera centers found. Skip this stage.")
+            return [], []
+
     novel_cam_centers = novel_cam_centers[valid_mask]
 
     # NOTE: hard code lookat points as traj_center

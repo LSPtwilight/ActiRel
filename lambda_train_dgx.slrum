@@ -7,10 +7,10 @@
 #SBATCH --cpus-per-task=32      
 #SBATCH --gres=gpu:1
 #SBATCH --qos=lv0b
-#SBATCH --time=2:00:00
+#SBATCH --time=10:00:00
 #SBATCH --partition=DGX
 #SBATCH --account=research
-#SBATCH -w dgx-hyperplane16
+#SBATCH -w dgx-hyperplane12
 
 module load cuda11.8
 
@@ -21,11 +21,11 @@ export OMP_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 
-# get views
-for i in 6
+for i in 1 2 3 4
 do
+    TIMESTAMP=$(date +"%Y-%m-%d")
     echo "Training scan$i"
-    python train.py -s data/test-replica/scan$i/ -o output/test-replica/scan$i/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 10 --use_refine_depth
+    python train.py -s data/replica/scan$i/ -o output/replica/scan${i}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 10 --use_refine_depth
     echo "Finished training scan$i"
 done
 echo "Finished training all scans"
