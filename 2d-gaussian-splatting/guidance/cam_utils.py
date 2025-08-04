@@ -153,12 +153,17 @@ def generate_random_perturbed_camera_poses(
             # 1. Perturb camera position
             # Add Gaussian noise to position
             found = False
+            max_try_times = 10
             while not found:
                 pos_noise = np.random.normal(0, position_std, size=3)
                 perturbed_T = T + pos_noise
                 valid_mask = visibility_grid.check_valid_camera_center(torch.from_numpy(perturbed_T).unsqueeze(0).to(device))
                 if valid_mask.sum() > 0:
                     found = True
+                else:
+                    max_try_times -= 1
+                    if max_try_times <= 0:
+                        break
             
             # 2. Perturb camera rotation
             # Create small random rotation using axis-angle representation
@@ -575,7 +580,12 @@ def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, t
 
     # check valid novel camera center
     novel_cam_centers = torch.tensor(novel_cam_centers, dtype=torch.float32, device=device)
-    valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+
+    if visibility_grid is not None:
+        valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+    else:
+        valid_mask = torch.ones_like(novel_cam_centers[:, 0], dtype=torch.bool)
+
     novel_cam_centers = novel_cam_centers[valid_mask]
 
     # get lookat points
@@ -636,7 +646,12 @@ def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center
 
     # check valid novel camera center
     novel_cam_centers = torch.tensor(novel_cam_centers, dtype=torch.float32, device=device)
-    valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+
+    if visibility_grid is not None:
+        valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+    else:
+        valid_mask = torch.ones_like(novel_cam_centers[:, 0], dtype=torch.bool)
+
     novel_cam_centers = novel_cam_centers[valid_mask]
 
     vec = traj_center - novel_cam_centers  # [N, 3]
@@ -649,7 +664,7 @@ def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center
     delta_azimuths = torch.deg2rad(delta_azimuth_degs)
     azimuths_perturbeds = azimuths + delta_azimuths
 
-    delta_elevation_degs = torch.rand(novel_cam_centers.shape[0], device=device) * 60 - 55  # [-55, 5]
+    delta_elevation_degs = torch.rand(novel_cam_centers.shape[0], device=device) * 55 - 55  # [-55, 0]
     delta_elevations = torch.deg2rad(delta_elevation_degs)
     elevations_perturbeds = elevations + delta_elevations
 
@@ -830,16 +845,19 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
     max_z = train_cam_centers[:, 2].max()
     novel_cam_centers[:, 2] = max_z
     
-    # check valid camera center
-    valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
-    if valid_mask.sum() == 0:
-        print("No valid camera centers found. Using original camera centers.")
-        novel_cam_centers = origin_train_cam_centers
+    if visibility_grid is not None:
+        # check valid camera center
         valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
-
         if valid_mask.sum() == 0:
-            print("No valid camera centers found. Skip this stage.")
-            return [], []
+            print("No valid camera centers found. Using original camera centers.")
+            novel_cam_centers = origin_train_cam_centers
+            valid_mask = visibility_grid.check_valid_camera_center(novel_cam_centers)
+
+            if valid_mask.sum() == 0:
+                print("No valid camera centers found. Skip this stage.")
+                return [], []
+    else:
+        valid_mask = torch.ones_like(novel_cam_centers[:, 0], dtype=torch.bool)
 
     novel_cam_centers = novel_cam_centers[valid_mask]
 

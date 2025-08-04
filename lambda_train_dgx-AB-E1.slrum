@@ -1,0 +1,34 @@
+#!/bin/bash
+
+#SBATCH --job-name=priorgs
+#SBATCH --comment "test"
+#SBATCH --nodes=1  
+#SBATCH --ntasks-per-node=1             
+#SBATCH --cpus-per-task=32      
+#SBATCH --gres=gpu:1
+#SBATCH --qos=lv0b
+#SBATCH --time=10:00:00
+#SBATCH --partition=DGX
+#SBATCH --account=research
+#SBATCH -w dgx-hyperplane17
+
+module load cuda11.8
+
+# set thread number to 1, avoid NUM_THREADS exceeded
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+
+description="none_relative_depth"
+for i in 1 2 3 4 5 6 7 8
+do
+    TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
+    echo "Training scan$i"
+    python train-AB-E1.py -s data/replica/scan$i/ -o output/replica-AB-E1/scan${i}_${description}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 20
+    echo "Finished training scan$i"
+done
+echo "Finished training all scans"
+
+

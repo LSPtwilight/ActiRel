@@ -28,7 +28,7 @@ from dust3r.viz import add_scene_cam, CAM_COLORS, OPENGL, pts3d_to_trimesh, cat_
 from dust3r.demo import get_args_parser as dust3r_get_args_parser
 
 import cv2
-from matcha.dm_utils.dataset_readers import read_intrinsics_binary, read_extrinsics_binary, qvec2rotmat
+from matcha.dm_utils.dataset_readers import read_intrinsics_binary, read_extrinsics_binary, qvec2rotmat, read_intrinsics_text, read_extrinsics_text
 # from colmap.read_write_model import read_cameras_binary, read_images_binary, read_points3D_binary
 from colmap.read_write_model import Camera, Image, Point3D,  write_cameras_binary, write_images_binary, write_points3D_binary, write_points3D_text, rotmat2qvec
 from colmap.read_write_model import write_cameras_text, write_images_text, write_points3D_text
@@ -122,8 +122,12 @@ if __name__ == "__main__":
         if use_calibrated_poses:
             src_scale_mats = None
             if os.path.exists(f'{scene_path}/sparse/0'):
-                src_camera_data = read_intrinsics_binary(f'{scene_path}/sparse/0/cameras.bin')
-                src_image_data = read_extrinsics_binary(f'{scene_path}/sparse/0/images.bin')
+                try:
+                    src_camera_data = read_intrinsics_binary(f'{scene_path}/sparse/0/cameras.bin')
+                    src_image_data = read_extrinsics_binary(f'{scene_path}/sparse/0/images.bin')
+                except:
+                    src_camera_data = read_intrinsics_text(f'{scene_path}/sparse/0/cameras.txt')
+                    src_image_data = read_extrinsics_text(f'{scene_path}/sparse/0/images.txt')
 
                 src_intrinsics = {}
                 src_extrinsics = {}
@@ -269,10 +273,14 @@ if __name__ == "__main__":
     if args.output_dir is None:
         output_name = f'mast3r_allimages' if use_all_images else f'mast3r_{n_images}images'
         output_dir = os.path.join(scene_path, output_name)
+        temp_exp_name = scene_path.split('/')[-2]
+        time_str = time.strftime("%Y-%m-%d-%H-%M-%S")
+        exp_name = f'{temp_exp_name}_{time_str}'
     else:
         output_dir = args.output_dir
+        exp_name = output_dir.split('/')[-2]
     os.makedirs(output_dir, exist_ok=True)
-    _outdir = './tmp'
+    _outdir = f'./tmp/{exp_name}'
     
     print_debug("========== PARAMETERS ==========")
     print_debug(f"Scene path: {scene_path}")

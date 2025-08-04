@@ -4,6 +4,7 @@ import argparse
 import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
+import yaml
 
 def run_command_safe(command):
     print(f"Running command: {command}")
@@ -78,7 +79,7 @@ if __name__ == '__main__':
     parser.add_argument('--scratch_train', action='store_true', help='Run the scratch training step')
     parser.add_argument('--use_refine_depth', action='store_true', help='Use refine depth for training')
     parser.add_argument('--use_downsample_gaussians', action='store_true', help='Use downsample gaussians for training')
-    parser.add_argument('--is_forward_facing_scene', action='store_true', help='This is a forward facing scene, only use stage 1 prior')
+    parser.add_argument('--use_relative_depth_reg', action='store_true', help='Use relative depth regularization for training')
     args = parser.parse_args()
     
     # Set output paths
@@ -148,9 +149,7 @@ if __name__ == '__main__':
         "--depthanything_encoder", args.depthanything_encoder,
     ])
     
-    if args.use_refine_depth:
-        plane_root_path = os.path.join(mast3r_scene_path, 'plane-refine-depths')
-        refine_depth_path = plane_root_path
+    plane_root_path = os.path.join(mast3r_scene_path, 'plane-refine-depths')
 
     refine_free_gaussians_command = " ".join([
         "python", "scripts/refine_free_gaussians.py",
@@ -159,7 +158,6 @@ if __name__ == '__main__':
         "--config", args.free_gaussians_config,
         dense_arg,
         "--dense_regul", args.dense_regul,
-        "--refine_depth_path", refine_depth_path,
         "--use_downsample_gaussians" if args.use_downsample_gaussians else "",
     ])
 
@@ -251,72 +249,84 @@ if __name__ == '__main__':
 
     # generate 2D planes + refine depth for input views + init gaussian training
     run_command_safe(render_charts_command)
-    run_command_safe(generate_2Dplane_command)
-    run_command_safe(plane_refine_depth_command)
     run_command_safe(refine_free_gaussians_command)
 
     # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
-    run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
-    run_command_safe(plane_refine_depth_command_2)
+    # 1. render novel views
+    command = f"python 2d-gaussian-splatting/render_novel_views-AB-E1.py --source_path {mast3r_scene_path} --model_path {free_gaussians_path} --iteration 7000 --see3d_stage 1 --select_inpaint_num {args.select_inpaint_num}"
+    run_command_safe(command)
+
+    # 2. inpaint rgb
+    ref_image_path = os.path.join(mast3r_scene_path, 'see3d_render', 'ref-views')
+    warp_image_path = os.path.join(mast3r_scene_path, 'see3d_render', f'stage1', 'select-gs')
+    output_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', f'stage1', 'select-gs-inpainted')
+    command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir}"
+    run_command_safe(command)
+
+    # 3. generate depth and normal
+    command = f"python 2d-gaussian-splatting/guidance/see3d_dn_util.py --source_path {mast3r_scene_path} --see3d_stage 1"
+    run_command_safe(command)
+
+    # 4. generate 2D planes
+    cur_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage1', 'select-gs-planes')
+    command = f'python 2d-gaussian-splatting/planes/plane_excavator.py --plane_root_path {cur_plane_root_dir}'
+    run_command_safe(command)
+
+    # 5. merge results
+    command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {mast3r_scene_path} --see3d_stage 1 --plane_root_dir {plane_root_path} --none_difix --none_replace"
+    run_command_safe(command)
+
     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
     run_command_safe(mv_cmd)
-    run_command_safe(refine_free_gaussians_command)
 
-    if not args.is_forward_facing_scene:                # not forward facing scene, use stage 2 and 3
-        # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
-        run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
-        run_command_safe(plane_refine_depth_command_2)
-        mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
-        run_command_safe(mv_cmd)
-        run_command_safe(refine_free_gaussians_command)
+    # continue gaussian training
+    config_path = 'configs/free_gaussians_refinement/default.yaml'
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
 
-        # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
-        run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
-        run_command_safe(plane_refine_depth_command_2)
-        mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
-        run_command_safe(mv_cmd)
-        run_command_safe(refine_free_gaussians_command)
+    if args.use_relative_depth_reg:
+        cmd = " ".join([
+            "python", "2d-gaussian-splatting/train_with_charts-AB-E1.py",
+            "-s", mast3r_scene_path,
+            "-m", free_gaussians_path,
+            "--iterations", str(config['iterations']),
+            "--densify_until_iter", str(config['densify_until_iter']),
+            "--opacity_reset_interval", str(config['opacity_reset_interval']),
+            "--depth_ratio", str(config['depth_ratio']),
+            "--use_mip_filter" if config['use_mip_filter'] else "",
+            dense_arg,
+            "--normal_consistency_from", str(config['normal_consistency_from']),
+            "--distortion_from", str(config['distortion_from']),
+            "--depthanythingv2_checkpoint_dir", "./Depth-Anything-V2/checkpoints/",
+            "--depthanything_encoder", "vitl",
+            "--dense_regul", "default",
+            "--use_relative_depth_reg",                         # whether to use relative depth regularization
+        ])
     else:
-        print('NOTE: this is a forward facing scene, only use stage 1 prior')
+        cmd = " ".join([
+            "python", "2d-gaussian-splatting/train_with_charts-AB-E1.py",
+            "-s", mast3r_scene_path,
+            "-m", free_gaussians_path,
+            "--iterations", str(config['iterations']),
+            "--densify_until_iter", str(config['densify_until_iter']),
+            "--opacity_reset_interval", str(config['opacity_reset_interval']),
+            "--depth_ratio", str(config['depth_ratio']),
+            "--use_mip_filter" if config['use_mip_filter'] else "",
+            dense_arg,
+            "--normal_consistency_from", str(config['normal_consistency_from']),
+            "--distortion_from", str(config['distortion_from']),
+            "--depthanythingv2_checkpoint_dir", "./Depth-Anything-V2/checkpoints/",
+            "--depthanything_encoder", "vitl",
+            "--dense_regul", "default",
+            # "--use_relative_depth_reg",                         # whether to use relative depth regularization
+        ])
+        
+    run_command_safe(cmd)
 
     # render all images, export mesh, and evaluate
     run_command_safe(render_all_img_command)
     run_command_safe(tetra_command)
-
-    if args.is_forward_facing_scene:
-        # use mesh filter for forward facing scene
-        mesh_path = os.path.join(tetra_meshes_path, 'tetra_mesh_binary_search_7_iter_7000.ply')
-        length_threshold = 0.5
-        filtered_mesh_path = os.path.join(tetra_meshes_path, f'tetra_mesh_binary_search_7_iter_7000_filtered_t{length_threshold}.ply')
-        filter_mesh_command = " ".join([
-            "python", "2d-gaussian-splatting/utils/mesh_filter.py",
-            "--mesh_path", mesh_path,
-            "--output_path", filtered_mesh_path,
-        ])
-        run_command_safe(filter_mesh_command)
-        mv_cmd = f'mv {mesh_path} {tetra_meshes_path}/tetra_mesh_binary_search_7_iter_7000_ori.ply'
-        run_command_safe(mv_cmd)
-        mv_cmd = f'mv {filtered_mesh_path} {mesh_path}'
-        run_command_safe(mv_cmd)
-
     run_command_safe(eval_command)
-
-    # # vis global 3D plane by mesh
-    # mesh_list = os.listdir(tetra_meshes_path)
-    # mesh_list = [mesh_name for mesh_name in mesh_list if mesh_name.endswith('.ply')]
-    # mesh_list.sort()
-    # mesh_name = mesh_list[-1]
-    # mesh_path = os.path.join(tetra_meshes_path, mesh_name)
-    # print(f"Mesh path: {mesh_path}")
-    # vis_global_3Dplane_by_mesh_command = " ".join([
-    #     "python", "2d-gaussian-splatting/planes/vis_global_3Dplane_by_mesh.py",
-    #     "--source_path", mast3r_scene_path,
-    #     "--mesh_path", mesh_path,
-    #     "--plane_root_path", plane_root_path,
-    #     "--see3d_root_path", see3d_root_path,
-    #     "--output_path", os.path.join(args.output_path, 'vis_global_plane_color_mesh.ply'),
-    # ])
-    # run_command_safe(vis_global_3Dplane_by_mesh_command)
 
     t2 = time.time()
     print(f"Total running time: {t2 - t1} seconds")

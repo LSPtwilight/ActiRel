@@ -409,10 +409,15 @@ def extract_mesh(
     n_neighbors_to_interpolate : int = 2,
     n_interpolated_cameras_for_each_neighbor : int = 10,
     dense_data_path : str = None,
+    use_all_views : bool = True,
 ):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         print(("Dataset: ", dataset.source_path, dataset.model_path))
+        if use_all_views:
+            dataset.eval = True
+            interpolate_cameras = False                                         # not use pseudo-views interpolation
+            print("[INFO] Using all views for TSDF integration.")
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
         
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
@@ -445,15 +450,17 @@ def extract_mesh(
         else:
             cams = _cams
 
-        see3d_root_path = os.path.join(dataset.source_path, 'see3d_render')
-        if os.path.exists(see3d_root_path):
-            print(f"[INFO] Loading see3d render data from: {see3d_root_path}")
-            see3d_cameras_path = os.path.join(see3d_root_path, 'see3d_cameras.npz')
-            inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images')
-            see3d_cameras, _ = load_see3d_cameras(see3d_cameras_path, inpaint_root_dir)
-            cams = cams + see3d_cameras
-            print(f"          > Number of see3d cameras: {len(see3d_cameras)}")
-            print(f"          > Pseudo-views interpolation will be disabled because see3d render data is provided.")
+        # see3d_root_path = os.path.join(dataset.source_path, 'see3d_render')
+        # if os.path.exists(see3d_root_path):
+        #     print(f"[INFO] Loading see3d render data from: {see3d_root_path}")
+        #     see3d_cameras_path = os.path.join(see3d_root_path, 'see3d_cameras.npz')
+        #     inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images')
+        #     see3d_cameras, _ = load_see3d_cameras(see3d_cameras_path, inpaint_root_dir)
+        #     cams = cams + see3d_cameras
+        #     print(f"          > Number of see3d cameras: {len(see3d_cameras)}")
+        #     print(f"          > Pseudo-views interpolation will be disabled because see3d render data is provided.")
+
+        print(f"          > Number of TSDF integration cameras: {len(cams)}")
         
         marching_tetrahedra_with_binary_search(
             model_path=dataset.model_path, 
