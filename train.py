@@ -79,6 +79,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_refine_depth', action='store_true', help='Use refine depth for training')
     parser.add_argument('--use_downsample_gaussians', action='store_true', help='Use downsample gaussians for training')
     parser.add_argument('--is_forward_facing_scene', action='store_true', help='This is a forward facing scene, only use stage 1 prior')
+    parser.add_argument('--use_difix3d_refine', action='store_true', help='Use difix3d for refine rgb rendering')
     args = parser.parse_args()
     
     # Set output paths
@@ -243,6 +244,15 @@ if __name__ == '__main__':
         # "--vis_plane_path", vis_plane_path,
     ])
 
+    render_eval_path = os.path.join(free_gaussians_path, 'train', 'ours_7000', 'renders')
+    difix_output_dir = os.path.join(free_gaussians_path, 'train', 'ours_7000', 'renders_difix3d')
+    difix_command = " ".join([
+        "python", "2d-gaussian-splatting/guidance/difix3d_util.py",
+        "--input_dir", render_eval_path,
+        "--output_dir", difix_output_dir,
+        "--need_cat_result"
+    ])
+
     t1 = time.time()
     
     # run MAtCha training
@@ -297,6 +307,15 @@ if __name__ == '__main__':
         mv_cmd = f'mv {mesh_path} {tetra_meshes_path}/tetra_mesh_binary_search_7_iter_7000_ori.ply'
         run_command_safe(mv_cmd)
         mv_cmd = f'mv {filtered_mesh_path} {mesh_path}'
+        run_command_safe(mv_cmd)
+
+    if args.use_difix3d_refine:
+        print('********* NOTE: use difix3d for refine rgb rendering *********')
+        run_command_safe(difix_command)
+        ori_render_path = os.path.join(free_gaussians_path, 'train', 'ours_7000', 'renders-ori')
+        mv_cmd = f'mv {render_eval_path} {ori_render_path}'
+        run_command_safe(mv_cmd)
+        mv_cmd = f'mv {difix_output_dir} {render_eval_path}'
         run_command_safe(mv_cmd)
 
     run_command_safe(eval_command)

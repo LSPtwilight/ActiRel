@@ -92,7 +92,7 @@ if __name__ == '__main__':
     result_file=os.path.join(args.model_path, f'result_iter_{iter}.txt')
     # save metric to txt file
     with open(result_file, 'a') as f:
-        f.write(f"Metrics for {args.model_path}:")
+        f.write(f"Metrics for {args.model_path}:\n")
         for k, v in metrics.items():
             out = f"{k}: {v}\n"
             f.write(out)
