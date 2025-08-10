@@ -119,6 +119,7 @@ if __name__ == "__main__":
 
     # generate novel cameras
     novel_poses, novel_cams = [], []
+    large_fov_deg = 80
     if args.see3d_stage == 1:
         # interpolate between train_viewpoints
         novel_poses_1, novel_cams_1 = generate_interpolated_camera_poses(train_viewpoints, visibility_grid, interpolate_num=20)
@@ -131,17 +132,17 @@ if __name__ == "__main__":
         novel_cams.extend(novel_cams_2)
     elif args.see3d_stage == 2:
         # look at scene center
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40, fovy_deg=large_fov_deg)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 
         # look at scene around
-        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points, n_frames=40)
+        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points, n_frames=40, fovy_deg=large_fov_deg)
         novel_poses.extend(novel_poses_2)
         novel_cams.extend(novel_cams_2)
     else:
         # look around in input views position
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=80, n_frames=60)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=large_fov_deg, n_frames=60)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 

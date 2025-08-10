@@ -7,10 +7,10 @@
 #SBATCH --cpus-per-task=32      
 #SBATCH --gres=gpu:1
 #SBATCH --qos=lv0b
-#SBATCH --time=10:00:00
+#SBATCH --time=18:00:00
 #SBATCH --partition=DGX
 #SBATCH --account=research
-#SBATCH -w dgx-hyperplane12
+#SBATCH -w dgx-hyperplane14
 
 module load cuda11.8
 
@@ -21,13 +21,44 @@ export OMP_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 
-for i in 1 2 3 4
+# description="small_elevation_big_fovy_t2"
+# for i in 1 2 3 4 5 6 7 8
+# do
+#     TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
+#     echo "Training scan$i"
+#     python train.py -s data/replica/scan$i/ -o output/replica/scan${i}_${description}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 10 --use_refine_depth
+#     echo "Finished training scan$i"
+# done
+# echo "Finished training all scans"
+
+
+# description="small_elevation_big_fovy_t2"
+# for i in 1 2 3 4 5 6
+# do
+#     TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
+#     echo "Training scan$i"
+#     python train.py -s data/scannetpp/scan$i/ -o output/scannetpp/scan${i}_${description}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 10 --use_refine_depth
+#     echo "Finished training scan$i"
+# done
+# echo "Finished training all scans"
+
+
+description="small_elevation_big_fovy_t2"
+for i in 1 2 3
 do
-    TIMESTAMP=$(date +"%Y-%m-%d")
+    TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
     echo "Training scan$i"
-    python train.py -s data/replica/scan$i/ -o output/replica/scan${i}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 10 --use_refine_depth
+    python train.py -s data/deepblending/scan$i/ -o output/deepblending/scan${i}_${description}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 5 --select_inpaint_num 10 --use_refine_depth
     echo "Finished training scan$i"
 done
 echo "Finished training all scans"
 
-
+# description="forward_facing_small_elevation_t1"
+# for i in 6
+# do
+#     TIMESTAMP=2025-08-03-21-57-16
+#     echo "Training scan$i"
+#     python train.py -s data/deepblending/scan$i/ -o output/deepblending/scan${i}_${description}_${TIMESTAMP}/ --sfm_config posed --use_view_config --config_view_num 3 --select_inpaint_num 20 --use_refine_depth --is_forward_facing_scene
+#     echo "Finished training scan$i"
+# done
+# echo "Finished training all scans"
