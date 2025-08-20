@@ -192,17 +192,40 @@ def training(
         see3d_view_depths = pda_depths[input_view_num:]
         see3d_view_depths_stack = torch.stack(see3d_view_depths, dim=0).cuda()
         _images = [cam.original_image.cuda().permute(1, 2, 0) for cam in see3d_gs_cameras_list]
-        see3d_points = depths_to_points_parallel(see3d_view_depths_stack, see3d_gs_cameras_list)
-        N, H, W = see3d_view_depths_stack.shape
-        see3d_points = see3d_points.reshape(N, H, W, 3)
-        see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
-            pda_points=see3d_points,
-            images=_images,
-            conf_th=-1.,  # TODO: Try higher values
-            ratio_th=5.,
-            normal_scale=1e-10,
-            normalized_scales=0.5,
-        )
+
+        if see3d_view_num > 30:
+            print(f'WARNING: See3D view num is too large: {see3d_view_num}, use 30 views for training...')
+            # NOTE: hard code for 15 select inpaint views, use 0 - 9, 15 - 24, 30 - 39 (in see3d view id)
+            used_see3d_init_gs_view_list = list(range(10)) + list(range(15, 25)) + list(range(30, see3d_view_num))
+            init_gs_see3d_view_depths = [see3d_view_depths[i] for i in used_see3d_init_gs_view_list]
+            init_gs_see3d_view_depths_stack = torch.stack(init_gs_see3d_view_depths, dim=0).cuda()
+            init_gs_see3d_gs_cameras_list = [see3d_gs_cameras_list[i] for i in used_see3d_init_gs_view_list]
+            init_gs_see3d_images = [_images[i] for i in used_see3d_init_gs_view_list]
+
+            init_gs_see3d_points = depths_to_points_parallel(init_gs_see3d_view_depths_stack, init_gs_see3d_gs_cameras_list)
+            N, H, W = init_gs_see3d_view_depths_stack.shape
+            init_gs_see3d_points = init_gs_see3d_points.reshape(N, H, W, 3)
+            see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
+                pda_points=init_gs_see3d_points,
+                images=init_gs_see3d_images,
+                conf_th=-1.,  # TODO: Try higher values
+                ratio_th=5.,
+                normal_scale=1e-10,
+                normalized_scales=0.5,
+            )
+
+        else:
+            see3d_points = depths_to_points_parallel(see3d_view_depths_stack, see3d_gs_cameras_list)
+            N, H, W = see3d_view_depths_stack.shape
+            see3d_points = see3d_points.reshape(N, H, W, 3)
+            see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
+                pda_points=see3d_points,
+                images=_images,
+                conf_th=-1.,  # TODO: Try higher values
+                ratio_th=5.,
+                normal_scale=1e-10,
+                normalized_scales=0.5,
+            )
 
         gaussian_params = {}
         for key in input_view_gaussian_params.keys():

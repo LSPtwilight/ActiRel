@@ -684,6 +684,218 @@ def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center
 
     return new_poses, cur_cams
 
+def generate_see3d_camera_by_lookat_none_vis_plane(train_cams, visibility_grid, none_vis_plane_points_dict, traj_center=None, width=512, height=512, fovy_deg=60, fovx_deg=None):
+    """
+    Generate see3d camera by lookat none vis plane points.
+    """
+
+    def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+        """Construct lookat view matrix."""
+        vec2 = safe_normalize(-lookdir)
+        vec1 = safe_normalize(up)
+        vec0 = safe_normalize(np.cross(vec1, vec2))
+        vec1 = safe_normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, position], axis=1)
+        return m
+
+    # get fovy and fovx
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    train_cam_centers = torch.stack([cam.camera_center for cam in train_cams], dim=0)
+    device = train_cam_centers.device
+    traj_center = torch.mean(train_cam_centers, dim=0)
+
+    # check traj_center is valid
+    traj_center_valid_mask = visibility_grid.check_valid_camera_center(traj_center)
+    if traj_center_valid_mask:
+        cam_center = traj_center
+        print(f"traj_center is valid, use it as cam_center")
+    else:
+        x_min, x_max = train_cam_centers[:, 0].min(), train_cam_centers[:, 0].max()
+        y_min, y_max = train_cam_centers[:, 1].min(), train_cam_centers[:, 1].max()
+        z_min, z_max = train_cam_centers[:, 2].min(), train_cam_centers[:, 2].max()
+        
+        voxel_res = 8
+        x_coords = torch.linspace(x_min, x_max, voxel_res, device=device)
+        y_coords = torch.linspace(y_min, y_max, voxel_res, device=device)
+        z_coords = torch.linspace(z_min, z_max, voxel_res, device=device) 
+        X, Y, Z = torch.meshgrid(x_coords, y_coords, z_coords, indexing='ij')
+        voxel_grid_points = torch.stack([X.flatten(), Y.flatten(), Z.flatten()], dim=1)  # [voxel_res^3, 3]
+        
+        valid_mask = visibility_grid.check_valid_camera_center(voxel_grid_points)
+        valid_voxel_points = voxel_grid_points[valid_mask]
+        distances = torch.norm(valid_voxel_points - traj_center.unsqueeze(0), dim=1)
+        closest_idx = torch.argmin(distances)
+        cam_center = valid_voxel_points[closest_idx]
+        print(f"traj_center is not valid, use the closest voxel point as cam_center")
+
+    cam_center = cam_center.cpu().numpy()
+    lookat_points = []
+    for plane_id, none_vis_plane_points in none_vis_plane_points_dict.items():
+        # random choose one lookat point
+        lookat_point = none_vis_plane_points[np.random.randint(0, none_vis_plane_points.shape[0])]
+        lookat_points.append(lookat_point)
+
+    # NOTE: hard code up vector for colmap coords
+    up = np.array([0, 0, -1])
+    new_poses = np.stack([viewmatrix(cam_center - lookat, up, cam_center) for lookat in lookat_points])
+
+    homogeneous_row = np.zeros((len(new_poses), 1, 4))
+    homogeneous_row[:, 0, 3] = 1
+    new_poses = np.concatenate([new_poses, homogeneous_row], axis=1)
+
+    # generate camera
+    cur_cams = []
+    for idx in range(len(new_poses)):
+        c2w = new_poses[idx].astype(np.float32)
+        cur_cam = MiniCam(c2w, width, height, fovy=fovy, fovx=fovx)
+        cur_cams.append(cur_cam)
+
+    return new_poses, cur_cams
+
+def generate_see3d_camera_by_lookat_all_plane(train_cams, visibility_grid, plane_all_points_dict, traj_center=None, width=512, height=512, fovy_deg=60, fovx_deg=None):
+    """
+    Generate see3d camera by lookat all plane points.
+    """
+
+    def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+        """Construct lookat view matrix."""
+        vec2 = safe_normalize(-lookdir)
+        vec1 = safe_normalize(up)
+        vec0 = safe_normalize(np.cross(vec1, vec2))
+        vec1 = safe_normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, position], axis=1)
+        return m
+    
+    def get_point_to_plane_distance(points, plane_normal, plane_point):
+        """
+        Calculate distance from points to plane
+        """
+        # Calculate distance from points to plane: |(p - p0) · n|
+        # where p is the point, p0 is a point on the plane, n is the plane normal vector
+        point_to_plane = points - plane_point
+        distances = np.abs(np.sum(point_to_plane * plane_normal, axis=1))
+        return distances
+    
+    def find_optimal_camera_position(plane_points, plane_normal, visible_points, lookat_point):
+        """Find optimal camera position that can see all plane points."""
+        # Calculate plane bounding box
+        min_coords = np.min(plane_points, axis=0)
+        max_coords = np.max(plane_points, axis=0)
+        plane_size = np.max(max_coords - min_coords)
+        
+        # Calculate camera distance to plane (based on plane size and FOV)
+        distance_factor = plane_size / (2 * np.tan(fovx / 2))
+        optimal_distance = distance_factor * 1.5  # Add some margin
+        
+        # Move optimal_distance along normal direction from lookat_point
+        camera_direction = -plane_normal  # Camera looks at plane, so direction is opposite to normal
+
+        # Find optimal camera position in visible_points
+        # Calculate direction from each visible_point to lookat_point
+        directions_to_lookat = visible_points - lookat_point
+        directions_to_lookat = directions_to_lookat / (np.linalg.norm(directions_to_lookat, axis=1, keepdims=True) + 1e-6)
+        
+        # Calculate similarity between each direction and ideal camera direction (dot product)
+        ideal_direction = camera_direction / np.linalg.norm(camera_direction)
+        similarities = np.abs(np.dot(directions_to_lookat, ideal_direction))            # plane normal direction may be negative
+        similarities_thresh = np.max(similarities) * 0.95
+        
+        # Select points with direction closest to ideal direction and appropriate distance
+        # Distance should be within reasonable range (not too close or too far)
+        distances_to_lookat = np.linalg.norm(visible_points - lookat_point, axis=1)
+        distance_scores = np.exp(-np.abs(distances_to_lookat - optimal_distance) / optimal_distance)
+        
+        # Combined score: direction similarity + distance appropriateness
+        combined_scores = similarities + distance_scores
+
+        # Select best position from filtered points
+        high_similarity_mask = similarities > similarities_thresh
+        high_similarity_indices = np.nonzero(high_similarity_mask)[0]
+        high_similarity_scores = combined_scores[high_similarity_mask]
+        best_local_idx = np.argmax(high_similarity_scores)
+        best_idx = high_similarity_indices[best_local_idx]
+        
+        return visible_points[best_idx]
+
+    # get fovy and fovx
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    train_cam_centers = torch.stack([cam.camera_center for cam in train_cams], dim=0)
+    x_range = (train_cam_centers[:, 0].max() - train_cam_centers[:, 0].min()) / 2.0
+    y_range = (train_cam_centers[:, 1].max() - train_cam_centers[:, 1].min()) / 2.0
+    z_range = (train_cam_centers[:, 2].max() - train_cam_centers[:, 2].min()) / 2.0
+
+    # get traj center
+    if traj_center is None:
+        traj_center = torch.mean(train_cam_centers, dim=0).cpu().numpy()
+
+    all_visible_pnts = visibility_grid.get_all_visible_pnts()
+    all_visible_pnts = all_visible_pnts.detach().cpu().numpy()
+
+    x_dis = abs(all_visible_pnts[:, 0] - traj_center[0])
+    y_dis = abs(all_visible_pnts[:, 1] - traj_center[1])
+    z_dis = abs(all_visible_pnts[:, 2] - traj_center[2])
+
+    x_dis_valid_mask = x_dis < x_range.cpu().numpy()
+    y_dis_valid_mask = y_dis < y_range.cpu().numpy()
+    z_dis_valid_mask = z_dis < z_range.cpu().numpy()
+
+    valid_novel_cam_centers = all_visible_pnts[x_dis_valid_mask & y_dis_valid_mask & z_dis_valid_mask]
+
+    lookat_points = []
+    novel_cam_centers = []
+    for plane_id, plane_all_points in plane_all_points_dict.items():
+
+        # get plane normal
+        indices = np.random.choice(len(plane_all_points), 2, replace=False)
+        sample_points = plane_all_points[indices]
+        dir1 = sample_points[1] - sample_points[0]
+        while True:
+            # sample another point from plane points
+            new_sample_point = plane_all_points[np.random.randint(0, len(plane_all_points))]
+            dir2 = new_sample_point - sample_points[0]
+            cos_angle = np.dot(dir1, dir2) / (np.linalg.norm(dir1) * np.linalg.norm(dir2) + 1e-6)
+            if abs(cos_angle) < 0.95:        # avoid parallel
+                break
+        plane_normal = np.cross(dir1, dir2)
+        plane_normal = plane_normal / np.linalg.norm(plane_normal)
+
+        # 2. Select lookat point (plane center)
+        lookat_point = np.mean(plane_all_points, axis=0)
+
+        ref_distance = get_point_to_plane_distance(traj_center[None, :], plane_normal, lookat_point)
+        all_cam_dis = get_point_to_plane_distance(valid_novel_cam_centers, plane_normal, lookat_point)
+        dis_valid_mask = all_cam_dis < 1.2 * ref_distance[0]
+        plane_valid_cam_centers = valid_novel_cam_centers[dis_valid_mask]
+        
+        # 3. Select camera center (choose optimal position from visible points)
+        camera_center = find_optimal_camera_position(
+            plane_all_points, plane_normal, plane_valid_cam_centers, lookat_point
+        )
+
+        lookat_points.append(lookat_point)
+        novel_cam_centers.append(camera_center)
+
+    # NOTE: hard code up vector for colmap coords
+    up = np.array([0, 0, -1])
+    new_poses = np.stack([viewmatrix(p - lookat, up, p) for p, lookat in zip(novel_cam_centers, lookat_points)])
+
+    homogeneous_row = np.zeros((len(new_poses), 1, 4))
+    homogeneous_row[:, 0, 3] = 1
+    new_poses = np.concatenate([new_poses, homogeneous_row], axis=1)
+
+    # generate camera
+    cur_cams = []
+    for idx in range(len(new_poses)):
+        c2w = new_poses[idx].astype(np.float32)
+        cur_cam = MiniCam(c2w, width, height, fovy=fovy, fovx=fovx)
+        cur_cams.append(cur_cam)
+
+    return new_poses, cur_cams
+
 def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, select_num=10, none_visible_rate_low_bound=0.05, none_visible_rate_high_bound=0.5, covisible_rate_high_bound=0.8):
     """
     Select views that need inpainting

@@ -277,6 +277,39 @@ class VisibilityGrid:
 
         return x_min, y_min, z_min, x_max, y_max, z_max
     
+    def get_all_visible_pnts(self):
+        """
+        Get all visible points of the grid.
+        """
+        # Get grid dimensions
+        nx, ny, nz = self.resolution, self.resolution, self.resolution
+        
+        # Find visible voxels (value > 0.5)
+        visible_mask = self.visibility_grid > 0.5
+        
+        if not visible_mask.any():
+            print("No invisible voxels found.")
+            return
+        
+        # Generate grid center coordinates for all voxels
+        x_indices = torch.arange(nx, device=self.device)
+        y_indices = torch.arange(ny, device=self.device)
+        z_indices = torch.arange(nz, device=self.device)
+        
+        # Create meshgrid for all grid positions
+        X, Y, Z = torch.meshgrid(x_indices, y_indices, z_indices, indexing='ij')
+        
+        # Convert indices to world coordinates (grid centers)
+        grid_centers = torch.stack([
+            self.bbox_min[0] + (X + 0.5) * self.grid_size[0],
+            self.bbox_min[1] + (Y + 0.5) * self.grid_size[1], 
+            self.bbox_min[2] + (Z + 0.5) * self.grid_size[2]
+        ], dim=-1)  # Shape: (nx, ny, nz, 3)
+
+        visible_points = grid_centers[visible_mask]
+
+        return visible_points
+
     def vis_invisible_pnts(self, save_path: str):
         """
         Visualize invisible grid centers as points and save to file.

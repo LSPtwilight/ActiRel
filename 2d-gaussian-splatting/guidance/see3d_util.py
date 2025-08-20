@@ -8,8 +8,10 @@ from glob import glob
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from See3D_modules.mv_diffusion import mvdream_diffusion_model
+from See3D_modules.mv_diffusion_SR import mvdream_diffusion_model as mvdream_diffusion_model_SR
 from argparse import ArgumentParser
 import matplotlib.pyplot as plt
+import gc
 
 import time
 
@@ -19,6 +21,7 @@ class See3D(nn.Module):
         device,
         base_model_path='./checkpoint/MVD_weights/',
         model_type='sparse',                                # single or sparse
+        use_SR=False,
         seed=12345,
     ):
         super().__init__()
@@ -28,6 +31,8 @@ class See3D(nn.Module):
 
         tokenizer = CLIPTokenizer.from_pretrained(base_model_path, subfolder="tokenizer")
         self.rgb_model = mvdream_diffusion_model(base_model_path, mv_unet_path, tokenizer, seed=seed)
+        if use_SR:
+            self.rgb_model_SR = mvdream_diffusion_model_SR(base_model_path, mv_unet_path, tokenizer, seed=seed)
 
     def PIL2tensor(self, height, width, num_frames, masks, warps, logicalNot=False):
         channels = 3
@@ -137,7 +142,7 @@ class See3D(nn.Module):
 
         return ref_images, ref_image_names
 
-    def inpainting(self, source_imgs_dir, warp_root_dir, output_root_dir):
+    def inpainting(self, source_imgs_dir, warp_root_dir, output_root_dir, super_resolution=False):
 
         os.makedirs(output_root_dir, exist_ok=True)
 
@@ -167,6 +172,9 @@ class See3D(nn.Module):
         image_files = glob(os.path.join(warp_root_dir, "warp_*"))
         image_names = [os.path.basename(image) for image in image_files]
         image_names.sort()
+
+        fimage = Image.open(os.path.join(warp_root_dir, image_names[0]))
+        (width, height)= fimage.size
 
         for ins in image_names:
             warps_infer.append(Image.open(os.path.join(warp_root_dir, ins))) 
@@ -205,17 +213,75 @@ class See3D(nn.Module):
                     images_predict_names.append(input_names_batch[jj])
                 
         for jj in range(len(images_predict)):
-            images_predict[jj].resize((width_mvd, height_mvd)).save(os.path.join(output_root_dir,"predict_{}".format(images_predict_names[jj])))
+            images_predict[jj].resize((width, height)).save(os.path.join(output_root_dir,"predict_{}".format(images_predict_names[jj])))
 
         print(f'end inpainting, result saved in {output_root_dir}')
 
+        if super_resolution:
+            print('start SR inpainting')
+            del self.rgb_model
+            gc.collect()
+            torch.cuda.empty_cache()
 
+            masks_infer_SR = []
+            warps_infer_SR = []
+            mask2 = np.ones((height_mvd*2,width_mvd*2), dtype=np.float32)
+
+            ref_images, ref_image_names = self.load_ref_images(source_imgs_dir, height_mvd, width_mvd)
+
+            for imn, ref_img in zip(ref_image_names, ref_images):
+                masks_infer_SR.append(Image.fromarray(np.repeat(np.expand_dims(np.round(mask2*255.).astype(np.uint8),axis=2),3,axis=2)).resize((width_mvd, height_mvd)))
+                warps_infer_SR.append(ref_img)
+
+            for i in range(len(images_predict)):
+                masks_infer_SR.append(masks_infer[i])
+                warps_infer_SR.append(images_predict[i])
+
+            images_predict = []
+            images_predict_names = []
+            # grounp_size = min((len(masks_infer_SR) + 5)//2,50)
+            grounp_size = (len(masks_infer_SR) + 3) // 2
+            # grounp_size = (len(masks_infer_SR) + 3)
+            print('grounp_size:',grounp_size)
+            for i in range(0, len(masks_infer_SR[gt_num_b:]), grounp_size):
+                if(len(images_predict)!=0):
+                    masks_infer_batch = masks_infer_SR[:gt_num_b] + [masks_infer_batch[len(masks_infer_batch)//2]] + [masks_infer_batch[-1]] + masks_infer_SR[(gt_num_b+i):(i+gt_num_b+grounp_size)]
+                    warp_infer_batch = warps_infer_SR[:gt_num_b] + [images_predict[len(images_predict)//2]] + [images_predict[-1]] + warps_infer_SR[(gt_num_b+i):(i+gt_num_b+grounp_size)]
+                    input_names_batch = input_names[:gt_num_b] + [input_names_batch[len(masks_infer_batch)//2]] + [input_names_batch[-1]] + input_names[(gt_num_b+i):(i+gt_num_b+grounp_size)]
+                else:
+                    masks_infer_batch = masks_infer_SR[:gt_num_b] + masks_infer_SR[(gt_num_b+i):(i+gt_num_b+grounp_size)]
+                    warp_infer_batch = warps_infer_SR[:gt_num_b] + warps_infer_SR[(gt_num_b+i):(i+gt_num_b+grounp_size)]
+                    input_names_batch = input_names[:gt_num_b] + input_names[(gt_num_b+i):(i+gt_num_b+grounp_size)]
+
+                
+                prompt, batch = self.PIL2tensor(height_mvd*2,width_mvd*2,len(masks_infer_batch),masks_infer_batch,warp_infer_batch)
+                if(len(images_predict)!=0):
+                    images_predict_batch = self.rgb_model_SR.inference_next_frame(prompt,batch,len(masks_infer_batch),height_mvd*2,width_mvd*2,gt_num_frames=gt_num_b,output_type='pil')
+                    for jj in range(gt_num_b+2,len(images_predict_batch)):
+                        images_predict.append(images_predict_batch[jj])
+                        images_predict_names.append(input_names_batch[jj])
+                else:
+                    images_predict_batch = self.rgb_model_SR.inference_next_frame(prompt,batch,len(masks_infer_batch),height_mvd*2,width_mvd*2,gt_num_frames=gt_num_b,output_type='pil')
+                    for jj in range(gt_num_b,len(images_predict_batch)):
+                        images_predict.append(images_predict_batch[jj])
+                        images_predict_names.append(input_names_batch[jj])
+                gc.collect()
+                torch.cuda.empty_cache()
+
+
+            for jj in range(len(images_predict)):
+                images_predict[jj].resize((width_mvd*2, height_mvd*2)).save(os.path.join(output_root_dir,"SR_predict_{}".format(images_predict_names[jj])))
+
+            print(f'end SR inpainting, result saved in {output_root_dir}')
+        
+        
 if __name__ == "__main__":
 
     parser = ArgumentParser()
     parser.add_argument('--ref_imgs_dir', type=str)
     parser.add_argument('--warp_root_dir', type=str)
     parser.add_argument('--output_root_dir', type=str)
+    parser.add_argument('--use_SR', action='store_true', help='Use super resolution for inpainting')
     args = parser.parse_args()
 
     source_imgs_dir = args.ref_imgs_dir
@@ -224,8 +290,8 @@ if __name__ == "__main__":
 
     t1 = time.time()
 
-    see3d = See3D(device='cuda')
-    see3d.inpainting(source_imgs_dir=source_imgs_dir, warp_root_dir=warp_root_dir, output_root_dir=output_root_dir)
+    see3d = See3D(device='cuda', use_SR=args.use_SR)
+    see3d.inpainting(source_imgs_dir=source_imgs_dir, warp_root_dir=warp_root_dir, output_root_dir=output_root_dir, super_resolution=args.use_SR)
 
     # save cat img
     cat_save_root_path = os.path.join(os.path.dirname(output_root_dir), 'cat_img')

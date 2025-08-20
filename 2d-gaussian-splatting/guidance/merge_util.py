@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 from argparse import ArgumentParser
 import shutil
+import json
 
 
 def run_command_safe(command):
@@ -52,6 +53,7 @@ if __name__ == '__main__':
     parser.add_argument("--see3d_stage", required=True, type=int)                 # 1: perturb input views, 2: interpolate input views, 3: random search
     parser.add_argument("--none_replace", action='store_true')
     parser.add_argument("--none_difix", action='store_true')
+    parser.add_argument("--anchor_view_id_json_path", type=str, required=True)
     args = parser.parse_args()
 
     seed_everything()
@@ -142,6 +144,7 @@ if __name__ == '__main__':
         os.makedirs(plane_root_dir, exist_ok=True)
         begin_plane_idx = 0
 
+    anchor_view_id_list = []
     for i in range(cur_see3d_views):
         # rgb
         shutil.copy(os.path.join(cur_plane_root_dir, f'rgb_frame{i:06d}.png'), os.path.join(plane_root_dir, f'rgb_frame{begin_plane_idx:06d}.png'))
@@ -168,10 +171,15 @@ if __name__ == '__main__':
         shutil.copy(os.path.join(cur_plane_root_dir, f'plane_mask_frame{i:06d}.npy'), os.path.join(plane_root_dir, f'plane_mask_frame{begin_plane_idx:06d}.npy'))
         shutil.copy(os.path.join(cur_plane_root_dir, f'plane_vis_frame{i:06d}.png'), os.path.join(plane_root_dir, f'plane_vis_frame{begin_plane_idx:06d}.png'))
 
+        anchor_view_id_list.append(begin_plane_idx)
+
         begin_plane_idx += 1
 
     # copy need inpaint views points
     shutil.copy(os.path.join(cur_see3d_root_dir, f'stage{args.see3d_stage}_need_inpaint_views_points.ply'), os.path.join(plane_root_dir, f'stage{args.see3d_stage}_need_inpaint_views_points.ply'))
+
+    with open(args.anchor_view_id_json_path, 'w') as f:
+        json.dump(anchor_view_id_list, f)
 
     print(f'See3D stage {args.see3d_stage} merge geometry cues done!')
 

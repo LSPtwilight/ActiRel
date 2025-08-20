@@ -24,7 +24,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # 1. render novel views
-    command = f"python 2d-gaussian-splatting/render_novel_views.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_stage {args.see3d_stage} --select_inpaint_num {args.select_inpaint_num}"
+    command = f"python 2d-gaussian-splatting/render_novel_views_new.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_stage {args.see3d_stage} --select_inpaint_num {args.select_inpaint_num}"
     run_command_safe(command)
 
     ref_image_path = os.path.join(args.source_path, 'see3d_render', 'ref-views')
@@ -52,11 +52,20 @@ if __name__ == '__main__':
     run_command_safe(command)
 
     # 5. merge results
-    if not args.none_difix:
-        command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir}"
+    anchor_view_id_json_path = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'anchor_view_id.json')
+    if not args.none_difix:         # not replace inpaint results
+        command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir} --anchor_view_id_json_path {anchor_view_id_json_path} --none_replace"
         run_command_safe(command)
     else:
-        command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir} --none_difix"
+        command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir} --anchor_view_id_json_path {anchor_view_id_json_path} --none_difix --none_replace"
         run_command_safe(command)
+
+    # else:
+    #     if not args.none_difix:
+    #         command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir}"
+    #         run_command_safe(command)
+    #     else:
+    #         command = f"python 2d-gaussian-splatting/guidance/merge_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage} --plane_root_dir {args.plane_root_dir} --none_difix"
+    #         run_command_safe(command)
 
     print(f'See3D stage {args.see3d_stage} inpaint done!')

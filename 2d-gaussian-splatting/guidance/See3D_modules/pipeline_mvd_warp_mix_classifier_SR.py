@@ -30,7 +30,6 @@ def custom_decay_function_weight(t):
     t_peak = 200
     # t_peak = 333
     t_slow_decay_end = 60
-    # t_slow_decay_end = 40
     value_at_slow_decay_end = 0.8
     
     # Initialize output tensor
@@ -65,7 +64,7 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
 
 def compute_weights(timesteps, max_time=333.0, min_time=0.0):
     weights = (timesteps - min_time) / (max_time - min_time)
-    weights = torch.clamp(weights, 0.0, 1.0)    # Clamp weights between 0 and 1
+    weights = torch.clamp(weights, 0.0, 1.0)  # 限制权重在0和1之间
     return weights
 
 class MVDreamPipeline(DiffusionPipeline):
@@ -459,9 +458,14 @@ class MVDreamPipeline(DiffusionPipeline):
         image_clip = image_clip.to(device=device, dtype=torch.float32)
         # image_clip = image_clip.to(device=device)
         
+        # tt = self.image_encoder(image_clip, output_hidden_states=True)
+        # import pdb;pdb.set_trace() 
+        # image_embeds = self.image_encoder(image_clip, output_hidden_states=True).hidden_states[-2]
+        # image_embeds = image_embeds.repeat_interleave(num_images_per_prompt, dim=0)
         encoded_embeds = self.image_encoder(image_clip, output_hidden_states=False)
         image_embeds = encoded_embeds.image_embeds
         image_embeds = 0.2 * image_embeds.unsqueeze(-2).repeat(1, 77, 1).to(dtype)
+        # import pdb;pdb.set_trace()
 
         return torch.zeros_like(image_embeds), image_embeds
 
@@ -487,25 +491,7 @@ class MVDreamPipeline(DiffusionPipeline):
             image.save(path+f'_{i}.jpg')
 
     
-    def save_latents(self, noisy_latents_warp,latents,mix,name,t):
-        image_warp = self.decode_latents(noisy_latents_warp)
-        image_warp = self.numpy_to_pil(image_warp)
-        image = self.decode_latents(latents)
-        image = self.numpy_to_pil(image)
-        image_mix = self.decode_latents(mix)
-        image_mix = self.numpy_to_pil(image_mix)
-        grid = np.concatenate(
-            [
-                np.concatenate([image_warp[0], image_warp[1], image_warp[2]], axis=0),
-                np.concatenate([image_warp[3], image_warp[4], image_warp[5]], axis=0),
-                np.concatenate([image[0], image[1], image[2]], axis=0),
-                np.concatenate([image[3], image[4], image[5]], axis=0),
-                np.concatenate([image_mix[0], image_mix[1], image_mix[2]], axis=0),
-                np.concatenate([image_mix[3], image_mix[4], image_mix[5]], axis=0),
-            ],
-            axis=1,
-        )
-        kiui.write_image(f'/share/project/mabaorui/lucidDream/LucidDreamer-main/outputs/tt/warp/{t}_{name}.jpg', grid)
+    
     
     @torch.no_grad()
     def __call__(
@@ -559,8 +545,6 @@ class MVDreamPipeline(DiffusionPipeline):
             image = rearrange(image, "b f c h w -> (b f) c h w", f=num_frames)
             img_latents = self.vae.encode(image.to(weight_dtype).to(device)).latent_dist.sample()
             img_latents = img_latents * self.vae.config.scaling_factor # [b*f, c, h, w] shape=[6, 4, 32, 32]
-            # import pdb;pdb.set_trace()
-            # img_latents[:gt_num] = img_latents[:gt_num] * self.vae.config.scaling_factor
         if gt_frame is not None:    
             image_gt = rearrange(gt_frame, "b f c h w -> (b f) c h w", f=num_frames)
             img_latents_gt = self.vae.encode(image_gt.to(weight_dtype).to(device)).latent_dist.sample()
@@ -570,7 +554,6 @@ class MVDreamPipeline(DiffusionPipeline):
         image_embeds_neg, image_embeds_pos = self.encode_image(image, device, num_images_per_prompt) 
         image_embeds_pos = image_embeds_pos[0:1]
         
-        # import pdb;pdb.set_trace()
         if masks is not None:
             masks = rearrange(masks, "b f c h w -> (b f) c h w", f=num_frames)# [b*f, c, h, w]
             mask_latents = torch.nn.functional.interpolate(
@@ -613,8 +596,12 @@ class MVDreamPipeline(DiffusionPipeline):
             noise_gt = torch.randn_like(img_latents)
             # t = timesteps[0]
             t = 999
+            # print('init time:',t)
+            # print(torch.min(noise_gt),torch.max(noise_gt),torch.mean(noise_gt))
             tt = torch.tensor([t] * actual_num_frames, dtype=img_latents.dtype, device=device)
             noisy_latents = noise_scheduler.add_noise(img_latents_gt, noise_gt, tt.long())
+            # noisy_latents = noise_scheduler.add_noise(noisy_latents, noise_gt, tt.long())
+            print(torch.min(noisy_latents),torch.max(noisy_latents),torch.mean(noisy_latents))
         
 
         latents = torch.cat([img_latents[:gt_num], noisy_latents[gt_num:]], dim=0)
@@ -625,9 +612,10 @@ class MVDreamPipeline(DiffusionPipeline):
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # Denoising loop
+        # import pdb;pdb.set_trace()
         assert image.shape[0] == actual_num_frames, "Currently only supports batchsize==1"
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-
+    
         time_ratio = 5
         timestep_warp = (timesteps[0]//time_ratio).long()
         print(timestep_warp)
@@ -635,10 +623,9 @@ class MVDreamPipeline(DiffusionPipeline):
         tt = torch.tensor([timestep_warp] * actual_num_frames, dtype=noisy_latents.dtype, device=device)
         noisy_latents_warp = noise_scheduler.add_noise(img_latents, noise_warp, tt.long())
         
-   
+
         
         mix_latents_warp = torch.cat([img_latents[:gt_num], noisy_latents_warp[gt_num:]], dim=0)
-
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
@@ -652,8 +639,10 @@ class MVDreamPipeline(DiffusionPipeline):
                 noisy_latents_warp = noise_scheduler.add_noise(img_latents, noise_warp, tt.long())
                 weights = custom_decay_function_weight(tt.float())
                 weights = weights.view(tt.shape[0], 1, 1, 1).to(noisy_latents_warp.dtype)
-                noisy_latents_warp_weight = weights*noisy_latents_warp + (1. - weights) * latents
+                # noisy_latents_warp_weight = weights*noisy_latents_warp + (1. - weights) * latents
+                noisy_latents_warp_weight = img_latents
                 mix_latents_warp = torch.cat([img_latents[:gt_num], noisy_latents_warp_weight[gt_num:]], dim=0)
+                
                 
                 
                 if self.unet.input_blocks[0].__dict__['_modules']['0'].__dict__['in_channels'] == 9:
@@ -678,6 +667,7 @@ class MVDreamPipeline(DiffusionPipeline):
                 unet_inputs = {
                     'x': latent_model_input,# torch.Size([num_frames, 5, 32, 32])
                     'timesteps': torch.tensor([t] * actual_num_frames * multiplier, dtype=latent_model_input.dtype, device=device),# torch.Size([num_frames])
+                    # 'context': prompt_embeds.repeat(actual_num_frames,1,1),# torch.Size([num_frames, 77, 1024])
                     'context': (prompt_embeds + image_embeds_pos_input).repeat(actual_num_frames,1,1),
                     'num_frames': actual_num_frames,# 4
                     'camera': None,# 
@@ -693,10 +683,11 @@ class MVDreamPipeline(DiffusionPipeline):
                     
                     
                 if do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
                     
                     noise_pred[:,:4] = rescale_noise_cfg(noise_pred[:,:4], noise_pred_cond[:,:4], guidance_rescale=self.guidance_rescale)
 
-  
+                
                 latents: torch.Tensor = self.scheduler.step(
                     noise_pred[:,:4], t, latents[:, :4], **extra_step_kwargs, return_dict=False
                 )[0]
@@ -708,7 +699,6 @@ class MVDreamPipeline(DiffusionPipeline):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)  # type: ignore
-
         # Post-processing
         if output_type == "latent":
             image = latents

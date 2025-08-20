@@ -226,23 +226,35 @@ if __name__ == '__main__':
 
     pnts_path = os.path.join(mast3r_scene_path, 'chart_pcd.ply')
     vis_plane_path = os.path.join(mast3r_scene_path, 'vis_plane')
-    plane_refine_depth_command = " ".join([
-        "python", "scripts/plane_refine_depth.py",
-        "--source_path", mast3r_scene_path,
-        "--plane_root_path", plane_root_path,
-        "--pnts_path", pnts_path,
-        # "--vis_plane_path", vis_plane_path,
-    ])
 
+    def get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=None):
+        if see3d_root_path is not None:
+            if anchor_view_id_json_path is not None:
+                return " ".join([
+                    "python", "scripts/plane_refine_depth.py",
+                    "--source_path", mast3r_scene_path,
+                    "--plane_root_path", plane_root_path,
+                    "--pnts_path", pnts_path,
+                    "--anchor_view_id_json_path", anchor_view_id_json_path,
+                    "--see3d_root_path", see3d_root_path,
+                ])
+            else:
+                return " ".join([
+                    "python", "scripts/plane_refine_depth.py",
+                    "--source_path", mast3r_scene_path,
+                    "--plane_root_path", plane_root_path,
+                    "--pnts_path", pnts_path,
+                    "--see3d_root_path", see3d_root_path,
+                ])
+        else:
+            return " ".join([
+                "python", "scripts/plane_refine_depth.py",
+                "--source_path", mast3r_scene_path,
+                "--plane_root_path", plane_root_path,
+                "--pnts_path", pnts_path,
+            ])
+        
     see3d_root_path = os.path.join(mast3r_scene_path, 'see3d_render')
-    plane_refine_depth_command_2 = " ".join([
-        "python", "scripts/plane_refine_depth.py",
-        "--source_path", mast3r_scene_path,
-        "--plane_root_path", plane_root_path,
-        "--pnts_path", pnts_path,
-        "--see3d_root_path", see3d_root_path,
-        # "--vis_plane_path", vis_plane_path,
-    ])
 
     render_eval_path = os.path.join(free_gaussians_path, 'train', 'ours_7000', 'renders')
     difix_output_dir = os.path.join(free_gaussians_path, 'train', 'ours_7000', 'renders_difix3d')
@@ -262,52 +274,74 @@ if __name__ == '__main__':
     # generate 2D planes + refine depth for input views + init gaussian training
     run_command_safe(render_charts_command)
     run_command_safe(generate_2Dplane_command)
-    run_command_safe(plane_refine_depth_command)
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=None))
     run_command_safe(refine_free_gaussians_command)
 
     # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
     run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
-    run_command_safe(plane_refine_depth_command_2)
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
     run_command_safe(mv_cmd)
     run_command_safe(refine_free_gaussians_command)
 
-    if not args.is_forward_facing_scene:                # not forward facing scene, use stage 2 and 3
-        # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
-        run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
-        run_command_safe(plane_refine_depth_command_2)
-        mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
-        run_command_safe(mv_cmd)
-        run_command_safe(refine_free_gaussians_command)
+    # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
+    run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
+    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
+    run_command_safe(mv_cmd)
+    run_command_safe(refine_free_gaussians_command)
 
-        # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
-        run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
-        run_command_safe(plane_refine_depth_command_2)
-        mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
-        run_command_safe(mv_cmd)
-        run_command_safe(refine_free_gaussians_command)
-    else:
-        print('NOTE: this is a forward facing scene, only use stage 1 prior')
+    # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
+    run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
+    anchor_view_id_json_path = os.path.join(see3d_root_path, 'stage3', 'anchor_view_id.json')
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=anchor_view_id_json_path, see3d_root_path=see3d_root_path))
+    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
+    run_command_safe(mv_cmd)
+    run_command_safe(refine_free_gaussians_command)
+
+    # if not args.is_forward_facing_scene:                # not forward facing scene, use stage 2 and 3
+    #     # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
+    #     run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
+    #     run_command_safe(plane_refine_depth_command_2)
+    #     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
+    #     run_command_safe(mv_cmd)
+    #     run_command_safe(refine_free_gaussians_command)
+
+    #     # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
+    #     run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
+    #     run_command_safe(plane_refine_depth_command_2)
+    #     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
+    #     run_command_safe(mv_cmd)
+    #     run_command_safe(refine_free_gaussians_command)
+    # else:
+    #     print('NOTE: this is a forward facing scene, only use stage 1 prior')
+
+    # see3d inpainting stage 4 + refine depth with 2D planes + continue gaussian training
+    # run_command_safe(get_see3d_inpaint_command(4, args.select_inpaint_num))
+    # run_command_safe(plane_refine_depth_command_2)
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s3'
+    # run_command_safe(mv_cmd)
+    # run_command_safe(refine_free_gaussians_command)
 
     # render all images, export mesh, and evaluate
     run_command_safe(render_all_img_command)
     run_command_safe(tetra_command)
 
-    if args.is_forward_facing_scene:
-        # use mesh filter for forward facing scene
-        mesh_path = os.path.join(tetra_meshes_path, 'tetra_mesh_binary_search_7_iter_7000.ply')
-        length_threshold = 0.5
-        filtered_mesh_path = os.path.join(tetra_meshes_path, f'tetra_mesh_binary_search_7_iter_7000_filtered_t{length_threshold}.ply')
-        filter_mesh_command = " ".join([
-            "python", "2d-gaussian-splatting/utils/mesh_filter.py",
-            "--mesh_path", mesh_path,
-            "--output_path", filtered_mesh_path,
-        ])
-        run_command_safe(filter_mesh_command)
-        mv_cmd = f'mv {mesh_path} {tetra_meshes_path}/tetra_mesh_binary_search_7_iter_7000_ori.ply'
-        run_command_safe(mv_cmd)
-        mv_cmd = f'mv {filtered_mesh_path} {mesh_path}'
-        run_command_safe(mv_cmd)
+    # if args.is_forward_facing_scene:
+    #     # use mesh filter for forward facing scene
+    #     mesh_path = os.path.join(tetra_meshes_path, 'tetra_mesh_binary_search_7_iter_7000.ply')
+    #     length_threshold = 0.5
+    #     filtered_mesh_path = os.path.join(tetra_meshes_path, f'tetra_mesh_binary_search_7_iter_7000_filtered_t{length_threshold}.ply')
+    #     filter_mesh_command = " ".join([
+    #         "python", "2d-gaussian-splatting/utils/mesh_filter.py",
+    #         "--mesh_path", mesh_path,
+    #         "--output_path", filtered_mesh_path,
+    #     ])
+    #     run_command_safe(filter_mesh_command)
+    #     mv_cmd = f'mv {mesh_path} {tetra_meshes_path}/tetra_mesh_binary_search_7_iter_7000_ori.ply'
+    #     run_command_safe(mv_cmd)
+    #     mv_cmd = f'mv {filtered_mesh_path} {mesh_path}'
+    #     run_command_safe(mv_cmd)
 
     if args.use_difix3d_refine:
         print('********* NOTE: use difix3d for refine rgb rendering *********')
