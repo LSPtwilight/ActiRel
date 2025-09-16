@@ -5,6 +5,7 @@ export https_proxy=""
 export all_proxy=""
 export no_proxy="localhost,127.0.0.1"
 
+# siuuuuuuuuuu
 
 # get views
 for i in 13
