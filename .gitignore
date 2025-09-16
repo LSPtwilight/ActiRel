@@ -155,6 +155,7 @@ dmypy.json
 learnableearthparser/fast_sampler/_sampler.c
 
 data/
+PromptDA/
 mycode/
 output/
 .vscode/

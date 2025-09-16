@@ -7,7 +7,7 @@ export no_proxy="localhost,127.0.0.1"
 
 
 # get views
-for i in 12
+for i in 13
 do
     TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
     echo "Training scan$i"
