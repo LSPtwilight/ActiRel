@@ -74,6 +74,14 @@ if __name__ == "__main__":
             image_name = f'{viewpoint.image_name}.{postfix}'
             shutil.copy(os.path.join(src_image_root_path, image_name), os.path.join(ref_views_save_root_path, image_name))
 
+    ### get image size same as input views
+    src_image_root = os.path.join(args.source_path, 'images')
+    first_img_path = os.path.join(src_image_root, os.listdir(src_image_root)[0])
+    with Image.open(first_img_path) as im:
+        REAL_W, REAL_H = im.size  
+
+    # REAL_H=512
+    # REAL_W=512
     # load see3d cameras
     see3d_cam_path = os.path.join(see3d_render_path, 'see3d_cameras.npz')
     if os.path.exists(see3d_cam_path):
@@ -132,12 +140,12 @@ if __name__ == "__main__":
         used_top_k = 5
 
         # look at scene center
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40, fovy_deg=used_fov_deg)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 
         # look at scene around
-        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points, n_frames=40, fovy_deg=used_fov_deg)
+        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points, n_frames=40, width=REAL_W, height=REAL_H, fovy_deg=used_fov_deg)
         novel_poses.extend(novel_poses_2)
         novel_cams.extend(novel_cams_2)
 
@@ -148,7 +156,7 @@ if __name__ == "__main__":
         used_top_k = 5
 
         # look around in input views position
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=used_fov_deg, n_frames=60)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=used_fov_deg, n_frames=60,width=REAL_W, height=REAL_H)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 
@@ -162,7 +170,7 @@ if __name__ == "__main__":
         raise ValueError(f'Invalid see3d_stage: {args.see3d_stage}')
     
     plane_all_points_dict = get_all_global_3Dpnts(args.source_path, plane_root_path, see3d_render_path, vis_plane_pnts_path, top_k=used_top_k)
-    novel_poses_3, novel_cams_3 = generate_see3d_camera_by_lookat_all_plane(train_viewpoints, visibility_grid, plane_all_points_dict, fovy_deg=used_fov_deg)
+    novel_poses_3, novel_cams_3 = generate_see3d_camera_by_lookat_all_plane(train_viewpoints, visibility_grid, plane_all_points_dict, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
     novel_poses.extend(novel_poses_3)
     novel_cams.extend(novel_cams_3)
 

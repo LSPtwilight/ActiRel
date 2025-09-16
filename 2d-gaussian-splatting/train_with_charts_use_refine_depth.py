@@ -90,20 +90,13 @@ def training(
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
+
+    if dense_data_path is not None:
+        use_dense_supervision = True
     
     # Sparse data
     scene = Scene(dataset, gaussians, shuffle=False)
 
-    # NOTE: hard code for See3D root path
-    see3d_root_path = os.path.join(dataset.source_path, 'see3d_render')
-    see3d_cam_path = os.path.join(see3d_root_path, 'see3d_cameras.npz')
-    inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images')
-    if os.path.exists(see3d_cam_path):
-        see3d_gs_cameras_list, _ = load_see3d_cameras(see3d_cam_path, inpaint_root_dir)
-    else:
-        see3d_gs_cameras_list = []
-    
-    # Dense data
     if dense_data_path is not None:
         use_dense_supervision = True
         
@@ -114,18 +107,33 @@ def training(
         os.makedirs(dense_dataset.model_path, exist_ok=True)
         dense_gaussians = GaussianModel(dataset.sh_degree)
         dense_scene = Scene(dense_dataset, dense_gaussians, shuffle=False)
-        
-        dense_viewpoint_cams = dense_scene.getTrainCameras()
-        dense_viewpoint_idx_stack = None
-        print(f"          > Number of dense cameras: {len(dense_viewpoint_cams)}")
-        
-        print(f"          > Changing spatial lr scale from {gaussians.spatial_lr_scale} to {dense_gaussians.spatial_lr_scale}")
-        gaussians.spatial_lr_scale = dense_gaussians.spatial_lr_scale
-        
-        print(f"          > Resolution of dense data: {dense_viewpoint_cams[0].original_image.shape}")
+
     else:
         use_dense_supervision = False
         use_chart_view_every_n_iter = 1
+
+    # NOTE: hard code for See3D root path
+    see3d_root_path = os.path.join(dataset.source_path, 'see3d_render')
+    see3d_cam_path = os.path.join(see3d_root_path, 'see3d_cameras.npz')
+    inpaint_root_dir = os.path.join(see3d_root_path, 'inpainted_images')
+    if os.path.exists(see3d_cam_path):
+        see3d_gs_cameras_list, _ = load_see3d_cameras(see3d_cam_path, inpaint_root_dir)
+        target_dir = os.path.join(see3d_root_path, 'stage0', 'select-gs-inpainted')
+        if not os.path.exists(target_dir):
+            print(f"dense view path do not exit: {target_dir}")
+            dense_view_num = 0
+        else:
+            image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+            images = [
+                f for f in os.listdir(target_dir)
+                if os.path.isfile(os.path.join(target_dir, f)) and
+                os.path.splitext(f)[1].lower() in image_extensions
+            ]
+            dense_view_num = len(images)
+    else:
+        see3d_gs_cameras_list = []
+        dense_view_num = 0
+    
     print(f"[INFO] Charts will be used for regularization every {use_chart_view_every_n_iter} iteration(s).")
     
     # ===================================================================================
@@ -337,35 +345,48 @@ def training(
         total_normals_list = [charts_normals[idx] for idx in range(len(charts_normals))]
         total_curvs_list = [charts_curvs[idx] for idx in range(len(charts_curvs))]
 
-    print(f"[INFO] Total number of views: {len(total_views_list)}, input views: {len(input_cams)}, see3d views: {len(see3d_gs_cameras_list)}")
 
+    print("================ view num info ================")
+    print(f"[INFO] Total number of views: {len(total_views_list)}, "
+          f"input views: {len(input_cams)}, "
+          f"see3d views: {len(see3d_gs_cameras_list)-dense_view_num}, "
+          f"dense views: {dense_view_num}")
+    print("==============================================")
+    
+    # ===================================================================================
     # Set mip filter
     if use_mip_filter:
         print("[INFO] Using mip filter during training.")
         gaussians.set_mip_filter(use_mip_filter)
-        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
 
-    if use_dense_supervision:
-        print("[INFO] Building depth priors from dense data...")
-        # TODO: Build priors from dense data
-        from matcha.pointmap.depthanythingv2 import load_model as load_depthanythingv2
-        from matcha.pointmap.depthanythingv2 import apply_depthanything
+        # Compute the mip filter for input views
+        gaussians.compute_mip_filter(cameras=total_views_list)
+        #gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
 
-        dav2 = load_depthanythingv2(checkpoint_dir=depthanythingv2_checkpoint_dir, encoder=depthanything_encoder, device='cuda')
-        dav2.eval()
-        dense_depth_priors = []
-        with torch.no_grad():
-            for i_image in range(len(dense_viewpoint_cams)):
-                gt_image = dense_viewpoint_cams[i_image].original_image.permute(1, 2, 0)
-                supervision_disparity = apply_depthanything(dav2, image=gt_image)
-                supervision_disparity = (supervision_disparity - supervision_disparity.min()) / (supervision_disparity.max() - supervision_disparity.min())
-                supervision_depth = 1. / (0.1 + 0.9 * supervision_disparity)
-                dense_depth_priors.append(supervision_depth.squeeze().unsqueeze(0).to('cpu'))
-        del dav2
-        gc.collect()
-        torch.cuda.empty_cache()
-        print("[INFO] Depth priors for dense data built.")
+
     # ===================================================================================
+    # do not use , we use refined pda depth
+    # if use_dense_supervision:
+    #     print("[INFO] Building depth priors from dense data...")
+    #     # TODO: Build priors from dense data
+    #     from matcha.pointmap.depthanythingv2 import load_model as load_depthanythingv2
+    #     from matcha.pointmap.depthanythingv2 import apply_depthanything
+
+    #     dav2 = load_depthanythingv2(checkpoint_dir=depthanythingv2_checkpoint_dir, encoder=depthanything_encoder, device='cuda')
+    #     dav2.eval()
+    #     dense_depth_priors = []
+    #     with torch.no_grad():
+    #         for i_image in range(len(dense_viewpoint_cams)):
+    #             gt_image = dense_viewpoint_cams[i_image].original_image.permute(1, 2, 0)
+    #             supervision_disparity = apply_depthanything(dav2, image=gt_image)
+    #             supervision_disparity = (supervision_disparity - supervision_disparity.min()) / (supervision_disparity.max() - supervision_disparity.min())
+    #             supervision_depth = 1. / (0.1 + 0.9 * supervision_disparity)
+    #             dense_depth_priors.append(supervision_depth.squeeze().unsqueeze(0).to('cpu'))
+    #     del dav2
+    #     gc.collect()
+    #     torch.cuda.empty_cache()
+    #     print("[INFO] Depth priors for dense data built.")
+    # # ===================================================================================
     
     print(f"\n[INFO] Normal consistency from iteration {normal_consistency_from} with lambda_normal {opt.lambda_normal}")
     print(f"[INFO] Distortion from iteration {distortion_from} with lambda_dist {opt.lambda_dist}")
@@ -397,13 +418,23 @@ def training(
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        
+
         gt_image = viewpoint_cam.original_image.cuda()
-        if viewpoint_idx >= input_view_num:                     # see3d view
+
+        # Determine the type of view and calculate loss accordingly
+        is_see3d_view = (input_view_num + dense_view_num <= viewpoint_idx) 
+        is_dense_view = (input_view_num <= viewpoint_idx) and ( viewpoint_idx < input_view_num + dense_view_num)
+
+        if is_dense_view:
+            Ll1 = l1_loss(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        elif is_see3d_view:
             rgb_current_conf = total_confs_list[viewpoint_idx]
-            Ll1 = l1_loss_with_conf(image, gt_image, rgb_current_conf) * 0.01
+            Ll1 = l1_loss_with_conf(image, gt_image, rgb_current_conf) * 0.01 # Example scaling
             loss = Ll1
-        else:
+
+        else: # is_input_view
             Ll1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
@@ -425,6 +456,11 @@ def training(
 
         # Get the correct confidence, depth, normal, and curvature for the current view
         current_conf = total_confs_list[viewpoint_idx]
+
+        #### adjust dense view confidence 
+        if is_dense_view:
+            dense_conf_factor = 2.5
+            current_conf = current_conf * dense_conf_factor
         current_depth = total_depths_list[viewpoint_idx]
         current_normal = total_normals_list[viewpoint_idx]
         current_curv = total_curvs_list[viewpoint_idx]
@@ -490,10 +526,7 @@ def training(
                         * (1. - (surf_normal * current_normal).sum(dim=0))
                     ).mean()
 
-            # Normal regularization
             normal_prior_loss = lambda_prior_normal * (1. - (rend_normal * current_normal).sum(dim=0)).mean()
-            
-            # Curvature regularization
             curv_prior_loss = lambda_prior_curvature * (current_curv - rend_curvature).abs().mean()
             # TODO: Should the curvature be applied to the surf normal?
             
@@ -727,7 +760,7 @@ def training(
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
                     if gaussians.use_mip_filter:
-                        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
+                        gaussians.compute_mip_filter(cameras=total_views_list)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
@@ -736,7 +769,7 @@ def training(
                 if iteration < opt.iterations - 100:  # don't update in the end of training
                     torch.cuda.empty_cache()
                     if gaussians.use_mip_filter:
-                        gaussians.compute_mip_filter(cameras=dense_viewpoint_cams if use_dense_supervision else total_views_list)
+                        gaussians.compute_mip_filter(cameras=total_views_list)
 
             # Optimizer step
             if iteration < opt.iterations:

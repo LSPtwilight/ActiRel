@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 import tempfile
 import shutil
 import torch
+import glob
 
 from mast3r.cloud_opt.sparse_ga import sparse_global_alignment
 from mast3r.cloud_opt.tsdf_optimizer import TSDFPostProcess
@@ -836,6 +837,7 @@ if __name__ == "__main__":
             np.array(point3d_ids, dtype=np.int64) # point3D_ids
         )
 
+    ### XMY
     os.makedirs(f'{output_dir}/sparse/0', exist_ok=True)
     write_cameras_binary(cameras_colmap, f'{output_dir}/sparse/0/cameras.bin')
     write_images_binary(images_colmap, f'{output_dir}/sparse/0/images.bin')
@@ -844,6 +846,26 @@ if __name__ == "__main__":
         write_cameras_text(cameras_colmap, f'{output_dir}/sparse/0/cameras.txt')
         write_images_text(images_colmap, f'{output_dir}/sparse/0/images.txt')
         write_points3D_text(points3d_colmap, f'{output_dir}/sparse/0/points3D.txt')
+    
+    path1 = scene_path     
+    path2 = output_dir
+    pattern = os.path.join(path1, "split-*views.json")
+
+    matching_files = glob.glob(pattern)
+
+    if matching_files:
+        source_file_path = matching_files[0]  
+        print(f"Found split file: {source_file_path}")
+        filename = os.path.basename(source_file_path)
+        destination_file_path = os.path.join(path2, filename)
+
+        try:
+            shutil.copy2(source_file_path, destination_file_path) 
+            print(f"File copied successfully from '{source_file_path}' to '{destination_file_path}'")
+        except Exception as e:
+            print(f"An error occurred while copying the file: {e}")
+    else:
+        print(f"No file matching 'split-*views.json' found in '{path1}'")
 
     if use_calibrated_poses:
         # save eval cameras

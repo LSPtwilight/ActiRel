@@ -16,6 +16,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--source_path', type=str, required=True)
     parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--plane_root_dir", type=str, required=True)
     parser.add_argument("--iteration", required=True, type=str)
     parser.add_argument("--see3d_stage", required=True, type=int)                 # 1: perturb input views, 2: interpolate input views, 3: random search
@@ -23,9 +24,17 @@ if __name__ == '__main__':
     parser.add_argument("--none_difix", action='store_true')
     args = parser.parse_args()
 
+    see3d_root_dir = os.path.join(args.source_path, 'see3d_render')
+
     # 1. render novel views
-    command = f"python 2d-gaussian-splatting/render_novel_views_new.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_stage {args.see3d_stage} --select_inpaint_num {args.select_inpaint_num}"
-    run_command_safe(command)
+    if args.see3d_stage == 0:   # stage 0: use dense data
+        # dense views
+        command = f"python 2d-gaussian-splatting/get_pseudo_see3d_data.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --data_path {args.data_path} --see3d_root_dir {see3d_root_dir} --see3d_stage {args.see3d_stage}"
+        run_command_safe(command)
+    else:
+        command = f"python 2d-gaussian-splatting/render_novel_views_new.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_stage {args.see3d_stage} --select_inpaint_num {args.select_inpaint_num}"
+        run_command_safe(command)
+
 
     ref_image_path = os.path.join(args.source_path, 'see3d_render', 'ref-views')
     warp_image_path = os.path.join(args.source_path, 'see3d_render', f'stage{args.see3d_stage}', 'select-gs')
@@ -39,8 +48,12 @@ if __name__ == '__main__':
         warp_image_path = difix3d_warp_image_path
 
     # 2. inpaint rgb
-    command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir}"
-    run_command_safe(command)
+    if args.see3d_stage == 0:  # stage 0: use dense data
+        command = f"python 2d-gaussian-splatting/render_see3d_views.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_root_dir {see3d_root_dir} --see3d_stage {args.see3d_stage}"
+        run_command_safe(command)
+    else:
+        command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir}"
+        run_command_safe(command)
 
     # 3. generate depth and normal
     command = f"python 2d-gaussian-splatting/guidance/see3d_dn_util.py --source_path {args.source_path} --see3d_stage {args.see3d_stage}"

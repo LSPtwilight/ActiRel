@@ -189,20 +189,67 @@ class VisibilityGrid:
 
         return valid_mask
 
+    # def render_visibility_map(
+    #     self, 
+    #     novel_cameras: List[GSCamera], 
+    #     novel_depths: List[torch.Tensor]
+    # ) -> List[torch.Tensor]:
+    #     """
+    #     Render visibility maps for novel cameras.
+        
+    #     Args:
+    #         novel_cameras: List of novel view cameras
+    #         novel_depths: List of depth maps for novel cameras
+            
+    #     Returns:
+    #         List of visibility maps, each with shape (H, W). 1 for visible, 0 for occluded
+    #     """
+    #     visibility_maps = []
+        
+    #     for cam_idx, (camera, depth_map) in enumerate(zip(novel_cameras, novel_depths)):
+    #         print(f"Rendering visibility map for camera {cam_idx+1}/{len(novel_cameras)}")
+            
+    #         # Ensure depth map is on correct device
+    #         if isinstance(depth_map, np.ndarray):
+    #             depth_map = torch.from_numpy(depth_map).to(self.device)
+    #         else:
+    #             depth_map = depth_map.to(self.device)
+
+    #         H, W = depth_map.shape
+
+    #         invalid_depth_mask = depth_map <= 1e-6
+    #         depth_map[invalid_depth_mask] = 1e-3  # NOTE: set invalid depth to 1e-3, avoid error when sampling
+
+    #         # Get points in depth map
+    #         max_samples = int(depth_map.max().item() / self.min_grid_size) + 1
+    #         sample_points = depths_to_sample_points_parallel(depth_map.unsqueeze(0), max_samples, [camera])  # (1, H * W, max_samples, 3)
+    #         sample_points = sample_points[:, :, :-10, :]  # NOTE: delete last 10 points, avoid being too close to surface boundary
+    #         max_samples = sample_points.shape[2]
+    #         sample_points_flat = sample_points.reshape(-1, 3)
+
+    #         # Sample visibility values
+    #         visibility_values_flat = self._sample_visibility_at_points(sample_points_flat)
+    #         visibility_values = visibility_values_flat.reshape(H, W, max_samples)
+
+    #         # Check if any point along each ray has visibility < 0.5 (i.e., invisible)
+    #         occlusion_map = (visibility_values < 0.5).any(dim=-1).float()
+
+    #         # Handle invalid depths, set them as occluded (1)
+    #         occlusion_map[invalid_depth_mask] = 1.0
+    #         visibility_map = 1 - occlusion_map
+            
+    #         visibility_maps.append(visibility_map)
+        
+    #     return visibility_maps
+
     def render_visibility_map(
         self, 
         novel_cameras: List[GSCamera], 
-        novel_depths: List[torch.Tensor]
+        novel_depths: List[torch.Tensor],
+        chunk_size: int = 65536   # 分块大小 (在 _sample_visibility_at_points 阶段)
     ) -> List[torch.Tensor]:
         """
-        Render visibility maps for novel cameras.
-        
-        Args:
-            novel_cameras: List of novel view cameras
-            novel_depths: List of depth maps for novel cameras
-            
-        Returns:
-            List of visibility maps, each with shape (H, W). 1 for visible, 0 for occluded
+        Render visibility maps for novel cameras (with chunking at visibility sampling).
         """
         visibility_maps = []
         
@@ -218,20 +265,35 @@ class VisibilityGrid:
             H, W = depth_map.shape
 
             invalid_depth_mask = depth_map <= 1e-6
-            depth_map[invalid_depth_mask] = 1e-3  # NOTE: set invalid depth to 1e-3, avoid error when sampling
+            depth_map[invalid_depth_mask] = 1e-3  # set invalid depth to small positive value
 
-            # Get points in depth map
+            # Compute max_samples, clamp to avoid explosion
             max_samples = int(depth_map.max().item() / self.min_grid_size) + 1
-            sample_points = depths_to_sample_points_parallel(depth_map.unsqueeze(0), max_samples, [camera])  # (1, H * W, max_samples, 3)
-            sample_points = sample_points[:, :, :-10, :]  # NOTE: delete last 10 points, avoid being too close to surface boundary
-            max_samples = sample_points.shape[2]
-            sample_points_flat = sample_points.reshape(-1, 3)
+            max_samples = min(max_samples, 512)  # 限制最大采样数
 
-            # Sample visibility values
-            visibility_values_flat = self._sample_visibility_at_points(sample_points_flat)
+            sample_points = depths_to_sample_points_parallel(
+                depth_map.unsqueeze(0), max_samples, [camera]
+            )  # (1, H*W, max_samples, 3)
+
+            # NOTE: delete last 10 points, avoid being too close to surface boundary
+            if max_samples > 10:
+                sample_points = sample_points[:, :, :-10, :]
+            max_samples = sample_points.shape[2]
+
+            sample_points_flat = sample_points.reshape(-1, 3)  # (H*W*max_samples, 3)
+
+            # --- step2: chunking when sampling visibility ---
+            visibility_values_list = []
+            for i in range(0, sample_points_flat.shape[0], chunk_size):
+                end = min(i + chunk_size, sample_points_flat.shape[0])
+                pts_chunk = sample_points_flat[i:end]
+                vis_chunk = self._sample_visibility_at_points(pts_chunk)
+                visibility_values_list.append(vis_chunk)
+
+            visibility_values_flat = torch.cat(visibility_values_list, dim=0)  # (H*W*max_samples,)
             visibility_values = visibility_values_flat.reshape(H, W, max_samples)
 
-            # Check if any point along each ray has visibility < 0.5 (i.e., invisible)
+            # --- step3: visibility judge ---
             occlusion_map = (visibility_values < 0.5).any(dim=-1).float()
 
             # Handle invalid depths, set them as occluded (1)

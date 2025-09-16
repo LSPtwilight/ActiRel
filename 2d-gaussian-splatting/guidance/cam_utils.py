@@ -670,15 +670,24 @@ def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center
 
     new_poses = []
     cur_cams = []
-    assert width == height
-    render_resolution = width
+    # assert width == height
+    # render_resolution = width
+    render_resolution_w = width
+    render_resolution_h = height
     for idx in range(len(novel_cam_centers)):
         
         cam_center = novel_cam_centers[idx]
         azimuth_perturbed = torch.rad2deg(azimuths_perturbeds[idx])
         elevation_perturbed = torch.rad2deg(elevations_perturbeds[idx])
 
-        pose, cam = get_pose_and_cam(elevation_perturbed.cpu().numpy(), azimuth_perturbed.cpu().numpy(), fovx, fovy, cam_center.cpu().numpy(), render_resolution=render_resolution)
+        # pose, cam = get_pose_and_cam(elevation_perturbed.cpu().numpy(), azimuth_perturbed.cpu().numpy(), fovx, fovy, cam_center.cpu().numpy(), render_resolution=render_resolution)
+        pose, cam = get_pose_and_cam(
+            elevation_perturbed.cpu().numpy(),
+            azimuth_perturbed.cpu().numpy(),
+            fovx, fovy,
+            cam_center.cpu().numpy(),
+            render_resolution=(render_resolution_w, render_resolution_h)  
+)
         new_poses.append(pose)
         cur_cams.append(cam)
 
@@ -1299,10 +1308,37 @@ def generate_look_around_camera_poses(train_cams, visibility_grid, azimuth_bin=1
             cur_cams.append(cam)
     return new_poses, cur_cams
 
-def get_pose_and_cam(elevation_deg, azimuth_deg, fovx, fovy, cam_center, radius=1, render_resolution=512):
+# def get_pose_and_cam(elevation_deg, azimuth_deg, fovx, fovy, cam_center, radius=1, render_resolution=512):
+
+#     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+#         """Construct lookat view matrix."""
+#         vec2 = safe_normalize(-lookdir)
+#         vec1 = safe_normalize(up)
+#         vec0 = safe_normalize(np.cross(vec1, vec2))
+#         vec1 = safe_normalize(np.cross(vec2, vec0))
+#         m = np.stack([vec0, vec1, vec2, position], axis=1)
+#         return m
+
+#     elevation = np.deg2rad(elevation_deg)
+#     azimuth = np.deg2rad(azimuth_deg)
+
+#     x = radius * np.cos(elevation) * np.cos(azimuth)
+#     y = radius * np.cos(elevation) * np.sin(azimuth)
+#     z = radius * np.sin(elevation)
+#     lookat_point = np.array([x, y, z]) + cam_center
+
+#     # NOTE: hard code up vector for colmap coords
+#     up = np.array([0, 0, -1])
+#     pose_raw = viewmatrix(cam_center - lookat_point, up, cam_center)
+#     pose = np.eye(4).astype(np.float32)
+#     pose[:3, :] = pose_raw[:3, :]
+
+#     cam = MiniCam(pose, render_resolution, render_resolution, fovy=fovy, fovx=fovx)
+#     return pose, cam
+def get_pose_and_cam(elevation_deg, azimuth_deg, fovx, fovy, cam_center,
+                     radius=1, render_resolution=512):
 
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
-        """Construct lookat view matrix."""
         vec2 = safe_normalize(-lookdir)
         vec1 = safe_normalize(up)
         vec0 = safe_normalize(np.cross(vec1, vec2))
@@ -1318,13 +1354,17 @@ def get_pose_and_cam(elevation_deg, azimuth_deg, fovx, fovy, cam_center, radius=
     z = radius * np.sin(elevation)
     lookat_point = np.array([x, y, z]) + cam_center
 
-    # NOTE: hard code up vector for colmap coords
     up = np.array([0, 0, -1])
     pose_raw = viewmatrix(cam_center - lookat_point, up, cam_center)
-    pose = np.eye(4).astype(np.float32)
+    pose = np.eye(4, dtype=np.float32)
     pose[:3, :] = pose_raw[:3, :]
 
-    cam = MiniCam(pose, render_resolution, render_resolution, fovy=fovy, fovx=fovx)
+    if isinstance(render_resolution, (tuple, list)):
+        res_w, res_h = render_resolution
+    else:
+        res_w = res_h = render_resolution
+
+    cam = MiniCam(pose, res_w, res_h, fovy=fovy, fovx=fovx)
     return pose, cam
 
 def covisibility_check_by_gs(camera1, camera2, gaussians):

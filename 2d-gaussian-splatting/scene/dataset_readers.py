@@ -150,7 +150,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+def readColmapSceneInfo(path, images, eval, llffhold=8, need_split=False):
 
     if eval:
         try:
@@ -197,7 +197,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
     # else:
     train_cam_infos = cam_infos
     test_cam_infos = []
-
+         
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "sparse/0/points3D.ply")

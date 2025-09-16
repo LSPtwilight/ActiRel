@@ -6,7 +6,7 @@
         "depends": [],
         "name": "hamming",
         "sources": [
-            "/home/nijunfeng/mycode/project/gs-recon/MAtCha/mast3r/asmk/cython/hamming.pyx"
+            "/home/xmy/priorgs-merge-total/mast3r/asmk/cython/hamming.pyx"
         ]
     },
     "module_name": "hamming"

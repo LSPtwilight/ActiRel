@@ -74,12 +74,28 @@ if __name__ == "__main__":
         gaussExtractor.export_image(train_dir)
         
     
-    if (not args.skip_test) and (len(scene.getTestCameras()) > 0):
+    if not args.skip_test:
         print("export rendered testing images ...")
         os.makedirs(test_dir, exist_ok=True)
-        gaussExtractor.reconstruction(scene.getTestCameras())
-        gaussExtractor.export_image(test_dir)
-    
+        import json, glob, shutil
+        split_json_path = glob.glob(os.path.join(args.model_path, "split*.json"))[0]
+        with open(split_json_path, 'r') as f:
+            test_idxs = set(json.load(f)["test"])
+
+        for subdir in ('gt', 'renders'):
+            src_dir = os.path.join(train_dir, subdir)
+            if not os.path.isdir(src_dir):
+                continue
+            dst_dir = os.path.join(test_dir, subdir)
+            os.makedirs(dst_dir, exist_ok=True)
+
+            for img_name in os.listdir(src_dir):
+                if not img_name.endswith('.png'):
+                    continue
+                img_id = int(os.path.splitext(img_name)[0])
+                if (img_id - 1) in test_idxs:
+                    shutil.copy(os.path.join(src_dir, img_name),
+                                os.path.join(dst_dir, img_name))
     
     if args.render_path:
         print("render videos ...")

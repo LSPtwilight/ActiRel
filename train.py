@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import json
+import glob
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 
@@ -168,7 +169,7 @@ if __name__ == '__main__':
         "python", "2d-gaussian-splatting/render_multires.py",
         "--source_path", mast3r_scene_path,
         "--model_path", free_gaussians_path,
-        "--skip_test",
+        # "--skip_test",
         "--skip_mesh",
         "--render_all_img",
         "--use_default_output_dir",
@@ -200,6 +201,7 @@ if __name__ == '__main__':
         "--source_path", mast3r_scene_path,
         "--model_path", free_gaussians_path,
         "--plane_root_dir", plane_root_path,
+        "--data_path", args.source_path,
         "--iteration", '7000',
         "--see3d_stage", str(stage),
         "--select_inpaint_num", str(select_inpaint_num),
@@ -265,6 +267,27 @@ if __name__ == '__main__':
         "--need_cat_result"
     ])
 
+    pseudo_see3d_command = " ".join([
+        "python", "scripts/see3d_inpaint.py",
+        "--source_path", mast3r_scene_path,
+        "--model_path", free_gaussians_path,
+        "--data_path", args.source_path,
+        "--plane_root_dir", plane_root_path,
+        "--iteration", '7000',
+        "--select_inpaint_num",'20',
+        "--see3d_stage", '0',
+        "--none_difix",
+    ])
+
+    plane_refine_depth_command_2 = " ".join([
+        "python", "scripts/plane_refine_depth.py",
+        "--source_path", mast3r_scene_path,
+        "--plane_root_path", plane_root_path,
+        "--pnts_path", pnts_path,
+        "--see3d_root_path", see3d_root_path,
+        # "--vis_plane_path", vis_plane_path,
+    ])
+
     t1 = time.time()
     
     # run MAtCha training
@@ -276,6 +299,17 @@ if __name__ == '__main__':
     run_command_safe(generate_2Dplane_command)
     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=None))
     run_command_safe(refine_free_gaussians_command)
+
+    # use dense views as pseudo see3d data
+    if args.dense_supervision:
+        print('********* NOTE: use dense views as pseudo see3d data *********')
+        
+        run_command_safe(pseudo_see3d_command)
+        run_command_safe(plane_refine_depth_command_2)
+        print(f'Get  dense views done! ')
+        # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
+        # run_command_safe(mv_cmd)
+        #run_command_safe(refine_free_gaussians_command)
 
     # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
     run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
@@ -298,6 +332,10 @@ if __name__ == '__main__':
     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
     run_command_safe(mv_cmd)
     run_command_safe(refine_free_gaussians_command)
+
+    # move split.json to free_gaussians_path for eval
+    cp_cmd_2 = f'cp {args.source_path}/split-{args.config_view_num}views.json {free_gaussians_path}'
+    run_command_safe(cp_cmd_2)
 
     # if not args.is_forward_facing_scene:                # not forward facing scene, use stage 2 and 3
     #     # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
