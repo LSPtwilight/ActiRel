@@ -8,7 +8,7 @@ export no_proxy="localhost,127.0.0.1"
 # siuuuuuuuuuu
 
 # get views
-for i in 10 12 13 14
+for i in 3
 do
     TIMESTAMP=$(date +"%Y-%m-%d-%H-%M-%S")
     echo "Training scan$i"
@@ -20,8 +20,8 @@ do
         --config_view_num 5 \
         --select_inpaint_num 10 \
         --use_refine_depth \
-        --use_downsample_gaussians \
-        --dense_supervision 
+        --use_downsample_gaussians 
+        ## --dense_supervision 
     echo "Finished training scan$i"
     echo "----------------------------------------"
     echo "----------------------------------------"

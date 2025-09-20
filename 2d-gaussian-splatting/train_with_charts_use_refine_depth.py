@@ -149,7 +149,9 @@ def training(
     print("Minimum confidence: ", charts_data['confs'].min())
     print("Maximum confidence: ", charts_data['confs'].max())
 
-    create_gaussians_from_pda_depth = True          # pda: prior depth anything
+    # ===================================================================================
+    # Load refine pda depth and points  # pda: prior depth anything
+    create_gaussians_from_pda_depth = True          
     print(f'WARNING: PDA depth root path: {refine_depth_path}')
     pda_depths = []
     pda_points_list = []
@@ -242,6 +244,7 @@ def training(
     else:
         gaussian_params = input_view_gaussian_params
 
+    # ===================================================================================
     # Downsample gaussians
     if len(gaussian_params['means']) > max_gaussians_num and use_downsample_gaussians:
         sample_idx, downsample_factor = voxel_downsample_gaussians(gaussian_params, voxel_size=0.005)
@@ -274,7 +277,7 @@ def training(
     torch.cuda.empty_cache()
     
     # ===================================================================================
-    
+    # Training setup
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -308,9 +311,10 @@ def training(
     charts_normals = charts_priors['normals']
     charts_curvs = charts_priors['curvs']
     print("[INFO] Charts priors built.")
-
     refine_charts_depth = pda_depths[:input_view_num]
     refine_charts_depth = torch.stack(refine_charts_depth, dim=0).cuda()
+
+    # Build priors from see3d pda depth
     if see3d_view_num > 0:
         see3d_refine_depths = pda_depths[input_view_num:]
         see3d_refine_depths = torch.stack(see3d_refine_depths, dim=0).cuda()        # [n_views, h, w]

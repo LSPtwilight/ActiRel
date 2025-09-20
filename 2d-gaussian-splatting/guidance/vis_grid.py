@@ -246,7 +246,7 @@ class VisibilityGrid:
         self, 
         novel_cameras: List[GSCamera], 
         novel_depths: List[torch.Tensor],
-        chunk_size: int = 65536   # 分块大小 (在 _sample_visibility_at_points 阶段)
+        chunk_size: int = 65536   
     ) -> List[torch.Tensor]:
         """
         Render visibility maps for novel cameras (with chunking at visibility sampling).
@@ -269,7 +269,7 @@ class VisibilityGrid:
 
             # Compute max_samples, clamp to avoid explosion
             max_samples = int(depth_map.max().item() / self.min_grid_size) + 1
-            max_samples = min(max_samples, 512)  # 限制最大采样数
+            max_samples = min(max_samples, 512)  
 
             sample_points = depths_to_sample_points_parallel(
                 depth_map.unsqueeze(0), max_samples, [camera]

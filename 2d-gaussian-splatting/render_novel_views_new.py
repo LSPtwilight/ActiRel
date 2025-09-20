@@ -80,8 +80,8 @@ if __name__ == "__main__":
     with Image.open(first_img_path) as im:
         REAL_W, REAL_H = im.size  
 
-    # REAL_H=512
-    # REAL_W=512
+    REAL_H=512
+    REAL_W=512
     # load see3d cameras
     see3d_cam_path = os.path.join(see3d_render_path, 'see3d_cameras.npz')
     if os.path.exists(see3d_cam_path):
