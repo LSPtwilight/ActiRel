@@ -180,72 +180,101 @@ def training(
 
     # ===================================================================================
     # Initialize gaussians
-    max_gaussians_num = 10_000_000
+    max_gaussians_num = 9_000_000
     print(f"Max gaussians num: {max_gaussians_num}, use downsample gaussians: {use_downsample_gaussians}")
 
+    # --- Process Input Views ---
     input_view_depths = pda_depths[:input_view_num]
     input_view_depths_stack = torch.stack(input_view_depths, dim=0).cuda()
-    _images = [cam.original_image.cuda().permute(1, 2, 0) for cam in scene.getTrainCameras()]
-    pda_points = depths_to_points_parallel(input_view_depths_stack, scene.getTrainCameras())
+    _images_input = [cam.original_image.cuda().permute(1, 2, 0) for cam in scene.getTrainCameras()]
+    pda_points_input = depths_to_points_parallel(input_view_depths_stack, scene.getTrainCameras())
     N, H, W = input_view_depths_stack.shape
-    pda_points = pda_points.reshape(N, H, W, 3)
+    pda_points_input = pda_points_input.reshape(N, H, W, 3)
     input_view_gaussian_params = get_gaussian_parameters_from_pda_data(
-        pda_points=pda_points,
-        images=_images,
-        conf_th=-1.,  # TODO: Try higher values
+        pda_points=pda_points_input,
+        images=_images_input,
+        conf_th=-1.,
         ratio_th=5.,
         normal_scale=1e-10,
         normalized_scales=0.5,
     )
 
+    # --- Process See3D Views (Separate Dense and Others) ---
     if see3d_view_num > 0:
         see3d_view_depths = pda_depths[input_view_num:]
-        see3d_view_depths_stack = torch.stack(see3d_view_depths, dim=0).cuda()
-        _images = [cam.original_image.cuda().permute(1, 2, 0) for cam in see3d_gs_cameras_list]
+        _images_see3d = [cam.original_image.cuda().permute(1, 2, 0) for cam in see3d_gs_cameras_list]
 
-        if see3d_view_num > 30:
-            print(f'WARNING: See3D view num is too large: {see3d_view_num}, use 30 views for training...')
-            # NOTE: hard code for 15 select inpaint views, use 0 - 9, 15 - 24, 30 - 39 (in see3d view id)
-            used_see3d_init_gs_view_list = list(range(10)) + list(range(15, 25)) + list(range(30, see3d_view_num))
-            init_gs_see3d_view_depths = [see3d_view_depths[i] for i in used_see3d_init_gs_view_list]
-            init_gs_see3d_view_depths_stack = torch.stack(init_gs_see3d_view_depths, dim=0).cuda()
-            init_gs_see3d_gs_cameras_list = [see3d_gs_cameras_list[i] for i in used_see3d_init_gs_view_list]
-            init_gs_see3d_images = [_images[i] for i in used_see3d_init_gs_view_list]
+        gaussian_params_list = [input_view_gaussian_params]
 
-            init_gs_see3d_points = depths_to_points_parallel(init_gs_see3d_view_depths_stack, init_gs_see3d_gs_cameras_list)
-            N, H, W = init_gs_see3d_view_depths_stack.shape
-            init_gs_see3d_points = init_gs_see3d_points.reshape(N, H, W, 3)
-            see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
-                pda_points=init_gs_see3d_points,
-                images=init_gs_see3d_images,
-                conf_th=-1.,  # TODO: Try higher values
+        # --- Separate Dense Views ---
+        if dense_view_num > 0:
+            dense_view_depths = see3d_view_depths[:dense_view_num]
+            dense_gs_cameras_list = see3d_gs_cameras_list[:dense_view_num]
+            dense_images = _images_see3d[:dense_view_num]
+            dense_view_depths_stack = torch.stack(dense_view_depths, dim=0).cuda()
+            dense_points = depths_to_points_parallel(dense_view_depths_stack, dense_gs_cameras_list)
+            N_d, H_d, W_d = dense_view_depths_stack.shape
+            dense_points = dense_points.reshape(N_d, H_d, W_d, 3)
+            dense_gaussian_params = get_gaussian_parameters_from_pda_data(
+                pda_points=dense_points,
+                images=dense_images,
+                conf_th=-1.,
                 ratio_th=5.,
                 normal_scale=1e-10,
                 normalized_scales=0.5,
             )
+            gaussian_params_list.append(dense_gaussian_params)
 
-        else:
-            see3d_points = depths_to_points_parallel(see3d_view_depths_stack, see3d_gs_cameras_list)
-            N, H, W = see3d_view_depths_stack.shape
-            see3d_points = see3d_points.reshape(N, H, W, 3)
-            see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
-                pda_points=see3d_points,
-                images=_images,
-                conf_th=-1.,  # TODO: Try higher values
-                ratio_th=5.,
-                normal_scale=1e-10,
-                normalized_scales=0.5,
-            )
+        # --- Separate Other See3D Views ---
+        other_see3d_view_num = see3d_view_num - dense_view_num
+        if other_see3d_view_num > 0:
+            other_see3d_view_depths = see3d_view_depths[dense_view_num:]
+            other_see3d_gs_cameras_list = see3d_gs_cameras_list[dense_view_num:]
+            other_see3d_images = _images_see3d[dense_view_num:]
 
+            if other_see3d_view_num > 30:
+                print(f'WARNING: Other See3D view num is large: {other_see3d_view_num}, using first 30 for initialization...')
+                used_see3d_init_gs_view_list = list(range(10)) + list(range(15, 25)) + list(range(30, see3d_view_num))
+                init_gs_see3d_view_depths = [other_see3d_view_depths[i] for i in used_see3d_init_gs_view_list]
+                init_gs_see3d_view_depths_stack = torch.stack(init_gs_see3d_view_depths, dim=0).cuda()
+                init_gs_see3d_gs_cameras_list = [other_see3d_gs_cameras_list[i] for i in used_see3d_init_gs_view_list]
+                init_gs_see3d_images = [other_see3d_images[i] for i in used_see3d_init_gs_view_list]
+                init_gs_see3d_points = depths_to_points_parallel(init_gs_see3d_view_depths_stack, init_gs_see3d_gs_cameras_list)
+                N_o, H_o, W_o = init_gs_see3d_view_depths_stack.shape
+                init_gs_see3d_points = init_gs_see3d_points.reshape(N_o, H_o, W_o, 3)
+                other_see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
+                    pda_points=init_gs_see3d_points,
+                    images=init_gs_see3d_images,
+                    conf_th=-1.,
+                    ratio_th=5.,
+                    normal_scale=1e-10,
+                    normalized_scales=0.5,
+                )
+            else:
+                other_see3d_view_depths_stack = torch.stack(other_see3d_view_depths, dim=0).cuda()
+                other_see3d_points = depths_to_points_parallel(other_see3d_view_depths_stack, other_see3d_gs_cameras_list)
+                N_o, H_o, W_o = other_see3d_view_depths_stack.shape
+                other_see3d_points = other_see3d_points.reshape(N_o, H_o, W_o, 3)
+                other_see3d_gaussian_params = get_gaussian_parameters_from_pda_data(
+                    pda_points=other_see3d_points,
+                    images=other_see3d_images,
+                    conf_th=-1.,
+                    ratio_th=5.,
+                    normal_scale=1e-10,
+                    normalized_scales=0.5,
+                )
+            gaussian_params_list.append(other_see3d_gaussian_params)
+
+        # Concatenate all parameter tensors
         gaussian_params = {}
-        for key in input_view_gaussian_params.keys():
-            gaussian_params[key] = torch.cat([input_view_gaussian_params[key], see3d_gaussian_params[key]], dim=0)
+        for key in gaussian_params_list[0].keys():
+            gaussian_params[key] = torch.cat([gp[key] for gp in gaussian_params_list if gp is not None], dim=0)
 
     else:
         gaussian_params = input_view_gaussian_params
 
     # ===================================================================================
-    # Downsample gaussians
+    # downsample gaussians 
     if len(gaussian_params['means']) > max_gaussians_num and use_downsample_gaussians:
         sample_idx, downsample_factor = voxel_downsample_gaussians(gaussian_params, voxel_size=0.005)
         print(f"Downsampled {len(gaussian_params['means'])} gaussians to {len(sample_idx)} gaussians...")
@@ -253,28 +282,29 @@ def training(
         sample_idx = torch.arange(len(gaussian_params['means']))
         downsample_factor = 1.0
         print(f"Not downsampling gaussians, using all {len(gaussian_params['means'])} gaussians...")
-
     print(f"Final number of gaussians: {len(sample_idx)}")
-    
+
     _means = gaussian_params['means'][sample_idx]
     _scales = gaussian_params['scales'][..., :2][sample_idx] * downsample_factor
     _quaternions = gaussian_params['quaternions'][sample_idx]
     _colors = gaussian_params['colors'][sample_idx]
+
     if use_dense_supervision:
         with torch.no_grad():
             _means = torch.cat([_means, dense_gaussians.get_xyz.detach()], dim=0)
             _scales = torch.cat([_scales, dense_gaussians.get_scaling.detach()], dim=0)
             _quaternions = torch.cat([_quaternions, dense_gaussians.get_rotation.detach()], dim=0)
             _colors = torch.cat([_colors, SH2RGB(dense_gaussians._features_dc.detach()[:, 0])], dim=0)
+
     gaussians.create_from_parameters(_means, _scales, _quaternions, _colors, gaussians.spatial_lr_scale)
     print("[INFO] Gaussians created from pnts data.")
 
-    # Delete unused variables
     if use_dense_supervision:
         del dense_gaussians, dense_scene
-
     gc.collect()
     torch.cuda.empty_cache()
+
+    # ===================================================================================
     
     # ===================================================================================
     # Training setup
@@ -311,51 +341,84 @@ def training(
     charts_normals = charts_priors['normals']
     charts_curvs = charts_priors['curvs']
     print("[INFO] Charts priors built.")
-    refine_charts_depth = pda_depths[:input_view_num]
-    refine_charts_depth = torch.stack(refine_charts_depth, dim=0).cuda()
 
-    # Build priors from see3d pda depth
+    refine_charts_depth = pda_depths[:input_view_num]
+    refine_charts_depth_stack = torch.stack(refine_charts_depth, dim=0).cuda()
+
+    # ===================================================================================
+    # Prepare See3D priors (normals, curvs) if see3d_view_num > 0
+    see3d_pseudo_confs_list = []
+    see3d_prior_normals_list = []
+    see3d_prior_curvs_list = []
+    see3d_refine_depths_list = pda_depths[input_view_num:]
+
     if see3d_view_num > 0:
         see3d_refine_depths = pda_depths[input_view_num:]
-        see3d_refine_depths = torch.stack(see3d_refine_depths, dim=0).cuda()        # [n_views, h, w]
-        # see3d_pseudo_confs = torch.ones_like(see3d_refine_depths) * 1.5             # NOTE: hard code 1.5 as in the original implementation
-        see3d_pseudo_confs = pda_confident_maps_list[input_view_num:]
-        see3d_pseudo_confs = torch.stack(see3d_pseudo_confs, dim=0).cuda()
-        see3d_world_view_transforms = torch.stack([see3d_gs_cameras_list[i].world_view_transform for i in range(len(see3d_gs_cameras_list))])
-        see3d_full_proj_transforms = torch.stack([see3d_gs_cameras_list[i].full_proj_transform for i in range(len(see3d_gs_cameras_list))])
-        see3d_prior_normals = depth2normal_parallel(
-            see3d_refine_depths, 
-            world_view_transforms=see3d_world_view_transforms, 
-            full_proj_transforms=see3d_full_proj_transforms
-        ).permute(0, 3, 1, 2)  # Shape (n_charts, 3, h ,w)
-        see3d_prior_curvs = normal2curv_parallel(see3d_prior_normals, torch.ones_like(see3d_prior_normals[:, 0:1]))
-        print('See3D pointmap loaded!')
+
+        if dense_view_num > 0:
+            dense_refine_depths = see3d_refine_depths[:dense_view_num]
+            dense_gs_cameras_list = see3d_gs_cameras_list[:dense_view_num]
+            dense_refine_depths_stack = torch.stack(dense_refine_depths, dim=0).cuda()
+            dense_world_view_transforms = torch.stack([cam.world_view_transform for cam in dense_gs_cameras_list])
+            dense_full_proj_transforms = torch.stack([cam.full_proj_transform for cam in dense_gs_cameras_list])
+            dense_prior_normals = depth2normal_parallel(
+                dense_refine_depths_stack,
+                world_view_transforms=dense_world_view_transforms,
+                full_proj_transforms=dense_full_proj_transforms
+            ).permute(0, 3, 1, 2)
+            dense_pseudo_confs = pda_confident_maps_list[input_view_num : input_view_num + dense_view_num]
+            dense_pseudo_confs_stack = torch.stack(dense_pseudo_confs, dim=0).cuda()
+            dense_prior_curvs = normal2curv_parallel(dense_prior_normals, torch.ones_like(dense_prior_normals[:, 0:1]))
+            see3d_pseudo_confs_list.extend([dense_pseudo_confs_stack[i] for i in range(dense_view_num)])
+            see3d_prior_normals_list.extend([dense_prior_normals[i] for i in range(dense_view_num)])
+            see3d_prior_curvs_list.extend([dense_prior_curvs[i] for i in range(dense_view_num)])
+
+        other_see3d_view_num = see3d_view_num - dense_view_num
+        if other_see3d_view_num > 0:
+            other_see3d_refine_depths = see3d_refine_depths[dense_view_num:]
+            other_see3d_gs_cameras_list = see3d_gs_cameras_list[dense_view_num:]
+            other_see3d_refine_depths_stack = torch.stack(other_see3d_refine_depths, dim=0).cuda()
+            other_see3d_world_view_transforms = torch.stack([cam.world_view_transform for cam in other_see3d_gs_cameras_list])
+            other_see3d_full_proj_transforms = torch.stack([cam.full_proj_transform for cam in other_see3d_gs_cameras_list])
+            other_see3d_prior_normals = depth2normal_parallel(
+                other_see3d_refine_depths_stack,
+                world_view_transforms=other_see3d_world_view_transforms,
+                full_proj_transforms=other_see3d_full_proj_transforms
+            ).permute(0, 3, 1, 2)
+            other_see3d_pseudo_confs = pda_confident_maps_list[input_view_num + dense_view_num:]
+            other_see3d_pseudo_confs_stack = torch.stack(other_see3d_pseudo_confs, dim=0).cuda()
+            other_see3d_prior_curvs = normal2curv_parallel(other_see3d_prior_normals, torch.ones_like(other_see3d_prior_normals[:, 0:1]))
+            see3d_pseudo_confs_list.extend([other_see3d_pseudo_confs_stack[i] for i in range(other_see3d_view_num)])
+            see3d_prior_normals_list.extend([other_see3d_prior_normals[i] for i in range(other_see3d_view_num)])
+            see3d_prior_curvs_list.extend([other_see3d_prior_curvs[i] for i in range(other_see3d_view_num)])
+
+        print('See3D priors (normals, curvs) computed for all views!')
 
     if create_gaussians_from_pda_depth:
-        charts_depths = refine_charts_depth.unsqueeze(1)
-        print(f'WARNING: Charts depths are now PDA depths.')
-    
-    # cat input views and see3d views as total training views
+        charts_depths = refine_charts_depth_stack.unsqueeze(1)
+        print(f'WARNING: Charts depths are now PDA depths (stacked input views).')
+
     if see3d_view_num > 0:
         total_views_list = input_cams + see3d_gs_cameras_list
-        total_confs_list = [charts_confs[idx] for idx in range(len(charts_confs))] + [see3d_pseudo_confs[idx].unsqueeze(0) for idx in range(len(see3d_pseudo_confs))]
-        total_depths_list = [charts_depths[idx] for idx in range(len(charts_depths))] + [see3d_refine_depths[idx].unsqueeze(0) for idx in range(len(see3d_refine_depths))]
-        total_normals_list = [charts_normals[idx] for idx in range(len(charts_normals))] + [see3d_prior_normals[idx] for idx in range(len(see3d_prior_normals))]
-        total_curvs_list = [charts_curvs[idx] for idx in range(len(charts_curvs))] + [see3d_prior_curvs[idx] for idx in range(len(see3d_prior_curvs))]
+        charts_confs_list = [charts_confs[idx] for idx in range(len(charts_confs))]
+        charts_depths_list = [charts_depths[i] for i in range(charts_depths.shape[0])]
+        see3d_refine_depths_unsqueezed_list = [d.unsqueeze(0) for d in see3d_refine_depths_list]
+        total_confs_list = charts_confs_list + see3d_pseudo_confs_list
+        total_depths_list = charts_depths_list + see3d_refine_depths_unsqueezed_list
+        charts_normals_list = [charts_normals[idx] for idx in range(len(charts_normals))]
+        total_normals_list = charts_normals_list + see3d_prior_normals_list
+        charts_curvs_list = [charts_curvs[idx] for idx in range(len(charts_curvs))]
+        total_curvs_list = charts_curvs_list + see3d_prior_curvs_list
     else:
         total_views_list = input_cams
-        total_confs_list = [charts_confs[idx] for idx in range(len(charts_confs))]
-        total_depths_list = [charts_depths[idx] for idx in range(len(charts_depths))]
-        total_normals_list = [charts_normals[idx] for idx in range(len(charts_normals))]
-        total_curvs_list = [charts_curvs[idx] for idx in range(len(charts_curvs))]
+        total_confs_list = [c for c in charts_confs]
+        charts_depths_list = [charts_depths[i] for i in range(charts_depths.shape[0])]
+        total_depths_list = charts_depths_list
+        total_normals_list = [n for n in charts_normals]
+        total_curvs_list = [c for c in charts_curvs]
 
 
-    print("================ view num info ================")
-    print(f"[INFO] Total number of views: {len(total_views_list)}, "
-          f"input views: {len(input_cams)}, "
-          f"see3d views: {len(see3d_gs_cameras_list)-dense_view_num}, "
-          f"dense views: {dense_view_num}")
-    print("==============================================")
+    # ===================================================================================
     
     # ===================================================================================
     # Set mip filter
@@ -402,6 +465,14 @@ def training(
     if use_depth_order_regularization:
         print(f"[INFO] Using depth order regularization for charts.")
 
+    print("==================================== [view num info] ====================================")
+    print(f"[INFO] Total number of views: {len(total_views_list)}, "
+          f"input views: {len(input_cams)}, "
+          f"see3d views: {len(see3d_gs_cameras_list)-dense_view_num}, "
+          f"dense views: {dense_view_num}")
+    print("=========================================================================================")
+    print("[INFO] Starting training...")
+
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):        
@@ -430,8 +501,9 @@ def training(
         is_dense_view = (input_view_num <= viewpoint_idx) and ( viewpoint_idx < input_view_num + dense_view_num)
 
         if is_dense_view:
-            Ll1 = l1_loss(image, gt_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            rgb_current_conf = total_confs_list[viewpoint_idx]
+            Ll1 = l1_loss_with_conf(image, gt_image, rgb_current_conf) * 0.01 # Example scaling
+            loss = Ll1
 
         elif is_see3d_view:
             rgb_current_conf = total_confs_list[viewpoint_idx]
@@ -462,9 +534,6 @@ def training(
         current_conf = total_confs_list[viewpoint_idx]
 
         #### adjust dense view confidence 
-        if is_dense_view:
-            dense_conf_factor = 2.5
-            current_conf = current_conf * dense_conf_factor
         current_depth = total_depths_list[viewpoint_idx]
         current_normal = total_normals_list[viewpoint_idx]
         current_curv = total_curvs_list[viewpoint_idx]

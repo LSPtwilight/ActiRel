@@ -1493,53 +1493,109 @@ def get_pixel_to_points_tensor(camera, points, use_depth_threshold=True, depth_t
         # Fill pixel_map and valid_mask in parallel
         pixel_map[final_v, final_u, final_within_indices] = final_point_indices.int()
 
+    # if use_depth_threshold:
+    #     temp_points_depth = points_depth.clone()
+    #     temp_points_depth[0] = points_depth.max() + 100.0                     # set the first point depth to a large value, as default point id is 0
+
+    #     pixel_map_flatten = pixel_map.reshape(-1)
+    #     pixel_pnts_depth_flatten = temp_points_depth[pixel_map_flatten]
+    #     pixel_pnts_depth_map = pixel_pnts_depth_flatten.reshape(H, W, max_points_per_pixel)
+    #     min_depth_map = pixel_pnts_depth_map.min(dim=-1).values                                 # [H, W]
+    #     min_depth_map[min_depth_map > points_depth.max()] = points_depth.max()                # avoid only 0 point idx
+
+    #     high_depth_map = min_depth_map + depth_thresh                                           # [H, W]
+    #     # copy high_depth_map to [H, W, max_points_per_pixel]
+    #     high_depth_map = high_depth_map.unsqueeze(-1).repeat(1, 1, max_points_per_pixel)
+
+    #     # filter out points that are behind the high_depth_map
+    #     valid_mask = pixel_pnts_depth_map < high_depth_map
+    #     valid_pnts_sum = valid_mask.sum(dim=-1)
+    #     max_valid_pnts_sum = valid_pnts_sum.max()
+    #     refine_pixel_map = torch.zeros(H, W, max_valid_pnts_sum, dtype=torch.int, device=device)
+
+    #     valid_coords = torch.nonzero(valid_mask)  # [num_valid_entries, 3] (h, w, point_idx)
+    #     if len(valid_coords) > 0:
+    #         h_coords = valid_coords[:, 0]
+    #         w_coords = valid_coords[:, 1]
+    #         point_slot_coords = valid_coords[:, 2]
+    #         valid_point_indices = pixel_map[h_coords, w_coords, point_slot_coords]
+
+    #         # get pos in refine_pixel_map
+    #         pixel_indices = h_coords * W + w_coords
+    #         sorted_indices = torch.argsort(pixel_indices)
+
+    #         sorted_pixel_indices = pixel_indices[sorted_indices]
+    #         sorted_h_coords = h_coords[sorted_indices]
+    #         sorted_w_coords = w_coords[sorted_indices]
+    #         sorted_point_indices = valid_point_indices[sorted_indices]
+
+    #         is_new_pixel = torch.ones_like(sorted_pixel_indices, dtype=torch.bool)
+    #         is_new_pixel[1:] = sorted_pixel_indices[1:] != sorted_pixel_indices[:-1]
+            
+    #         group_ids = torch.cumsum(is_new_pixel.int(), dim=0) - 1
+    #         start_indices = torch.nonzero(is_new_pixel).squeeze(-1)
+    #         group_start_positions = start_indices[group_ids]
+    #         within_pixel_offsets = torch.arange(len(sorted_pixel_indices), device=device) - group_start_positions
+
+    #         refine_pixel_map[sorted_h_coords, sorted_w_coords, within_pixel_offsets] = sorted_point_indices
+
+    #         return refine_pixel_map
+
     if use_depth_threshold:
         temp_points_depth = points_depth.clone()
-        temp_points_depth[0] = points_depth.max() + 100.0                     # set the first point depth to a large value, as default point id is 0
+        temp_points_depth[0] = points_depth.max() + 100.0
 
-        pixel_map_flatten = pixel_map.reshape(-1)
-        pixel_pnts_depth_flatten = temp_points_depth[pixel_map_flatten]
+        H, W, max_points_per_pixel = pixel_map.shape
+        pixel_map_flatten = pixel_map.reshape(-1)  # [H*W*max_points_per_pixel]
+
+        chunk_size = 10_000_000  # ~40 MB per chunk (adjust based on your GPU)
+        pixel_pnts_depth_flatten = torch.empty_like(pixel_map_flatten, dtype=points_depth.dtype)
+
+        for i in range(0, pixel_map_flatten.size(0), chunk_size):
+            end_i = min(i + chunk_size, pixel_map_flatten.size(0))
+            pixel_pnts_depth_flatten[i:end_i] = temp_points_depth[pixel_map_flatten[i:end_i]]
+
         pixel_pnts_depth_map = pixel_pnts_depth_flatten.reshape(H, W, max_points_per_pixel)
-        min_depth_map = pixel_pnts_depth_map.min(dim=-1).values                                 # [H, W]
-        min_depth_map[min_depth_map > points_depth.max()] = points_depth.max()                # avoid only 0 point idx
+        min_depth_map = pixel_pnts_depth_map.min(dim=-1).values
+        min_depth_map[min_depth_map > points_depth.max()] = points_depth.max()
 
-        high_depth_map = min_depth_map + depth_thresh                                           # [H, W]
-        # copy high_depth_map to [H, W, max_points_per_pixel]
+        high_depth_map = min_depth_map + depth_thresh
         high_depth_map = high_depth_map.unsqueeze(-1).repeat(1, 1, max_points_per_pixel)
 
-        # filter out points that are behind the high_depth_map
         valid_mask = pixel_pnts_depth_map < high_depth_map
         valid_pnts_sum = valid_mask.sum(dim=-1)
         max_valid_pnts_sum = valid_pnts_sum.max()
-        refine_pixel_map = torch.zeros(H, W, max_valid_pnts_sum, dtype=torch.int, device=device)
+        if max_valid_pnts_sum == 0:
+            refine_pixel_map = torch.zeros(H, W, 1, dtype=torch.int, device=device)
+        else:
+            refine_pixel_map = torch.zeros(H, W, max_valid_pnts_sum, dtype=torch.int, device=device)
 
-        valid_coords = torch.nonzero(valid_mask)  # [num_valid_entries, 3] (h, w, point_idx)
-        if len(valid_coords) > 0:
-            h_coords = valid_coords[:, 0]
-            w_coords = valid_coords[:, 1]
-            point_slot_coords = valid_coords[:, 2]
-            valid_point_indices = pixel_map[h_coords, w_coords, point_slot_coords]
+            valid_coords = torch.nonzero(valid_mask)  # [num_valid, 3]
+            if len(valid_coords) > 0:
+                h_coords = valid_coords[:, 0]
+                w_coords = valid_coords[:, 1]
+                point_slot_coords = valid_coords[:, 2]
+                valid_point_indices = pixel_map[h_coords, w_coords, point_slot_coords]
 
-            # get pos in refine_pixel_map
-            pixel_indices = h_coords * W + w_coords
-            sorted_indices = torch.argsort(pixel_indices)
+                pixel_indices = h_coords * W + w_coords
+                sorted_indices = torch.argsort(pixel_indices)
 
-            sorted_pixel_indices = pixel_indices[sorted_indices]
-            sorted_h_coords = h_coords[sorted_indices]
-            sorted_w_coords = w_coords[sorted_indices]
-            sorted_point_indices = valid_point_indices[sorted_indices]
+                sorted_pixel_indices = pixel_indices[sorted_indices]
+                sorted_h_coords = h_coords[sorted_indices]
+                sorted_w_coords = w_coords[sorted_indices]
+                sorted_point_indices = valid_point_indices[sorted_indices]
 
-            is_new_pixel = torch.ones_like(sorted_pixel_indices, dtype=torch.bool)
-            is_new_pixel[1:] = sorted_pixel_indices[1:] != sorted_pixel_indices[:-1]
-            
-            group_ids = torch.cumsum(is_new_pixel.int(), dim=0) - 1
-            start_indices = torch.nonzero(is_new_pixel).squeeze(-1)
-            group_start_positions = start_indices[group_ids]
-            within_pixel_offsets = torch.arange(len(sorted_pixel_indices), device=device) - group_start_positions
+                is_new_pixel = torch.ones_like(sorted_pixel_indices, dtype=torch.bool)
+                is_new_pixel[1:] = sorted_pixel_indices[1:] != sorted_pixel_indices[:-1]
+                
+                group_ids = torch.cumsum(is_new_pixel.int(), dim=0) - 1
+                start_indices = torch.nonzero(is_new_pixel).squeeze(-1)
+                group_start_positions = start_indices[group_ids]
+                within_pixel_offsets = torch.arange(len(sorted_pixel_indices), device=device) - group_start_positions
 
-            refine_pixel_map[sorted_h_coords, sorted_w_coords, within_pixel_offsets] = sorted_point_indices
+                refine_pixel_map[sorted_h_coords, sorted_w_coords, within_pixel_offsets] = sorted_point_indices
 
-            return refine_pixel_map
+        return refine_pixel_map
 
     return pixel_map
 
