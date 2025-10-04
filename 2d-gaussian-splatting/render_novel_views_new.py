@@ -174,19 +174,6 @@ if __name__ == "__main__":
     novel_poses.extend(novel_poses_3)
     novel_cams.extend(novel_cams_3)
 
-    # # vis train camera
-    # train_c2ws = []
-    # for train_cam in train_viewpoints:
-    #     w2c = (train_cam.world_view_transform).transpose(0, 1).cpu().numpy()
-    #     c2w = np.linalg.inv(w2c)
-    #     train_c2ws.append(c2w)
-    # train_c2ws = np.array(train_c2ws)
-    # temp_mesh_path = './data/replica/scan5/gt_mesh/scene_mesh.ply'
-    # vis_camera_pose(novel_poses, mesh_path=temp_mesh_path)
-    # # vis_camera_pose(train_c2ws, mesh_path=temp_mesh_path)
-    # exit()
-
-
     # render gs
     gs_output_dir = os.path.join(novel_views_save_root_path, 'raw-gs')
     os.makedirs(gs_output_dir, exist_ok=True)
@@ -280,13 +267,6 @@ if __name__ == "__main__":
     invalid_depth_mask = need_inpaint_views_depths <= 1e-6
     need_inpaint_views_depths[invalid_depth_mask] = 1e-3
     need_inpaint_views_points = depths_to_points_parallel(need_inpaint_views_depths, need_inpaint_views_cams)
-
-    # # vis each view need inpaint views points
-    # for idx in range(len(need_inpaint_views_cams)):
-    #     vis_points = (need_inpaint_views_points[idx].cpu().numpy()).reshape(-1, 3)
-    #     invalid_points_mask = (invalid_depth_mask[idx].cpu().numpy()).reshape(-1)
-    #     vis_points = vis_points[~invalid_points_mask]
-    #     trimesh.PointCloud(vis_points).export(os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_need_inpaint_views_points_frame{idx:06d}.ply'))
 
     need_inpaint_views_points = need_inpaint_views_points.reshape(-1, 3)
     invalid_depth_mask_flatten = invalid_depth_mask.reshape(-1)

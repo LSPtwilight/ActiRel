@@ -6,7 +6,7 @@ export no_proxy="localhost,127.0.0.1"
 
 failed_scans=""
 
-for i in 10 12 13 ; do
+for i in 1 ; do
     timestamp=$(date '+%Y-%m-%d-%H-%M-%S')
     echo "Training scan$i"
     
@@ -18,8 +18,7 @@ for i in 10 12 13 ; do
             --config_view_num 5 \
             --select_inpaint_num 10 \
             --use_refine_depth \
-            --use_downsample_gaussians \
-            --dense_supervision; then
+            --use_downsample_gaussians; then
         failed_scans="$failed_scans $i"
     fi
     echo "----------------------------------------"
