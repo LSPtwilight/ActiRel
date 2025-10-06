@@ -75,10 +75,10 @@ if __name__ == "__main__":
             shutil.copy(os.path.join(src_image_root_path, image_name), os.path.join(ref_views_save_root_path, image_name))
 
     ### get image size same as input views
-    src_image_root = os.path.join(args.source_path, 'images')
-    first_img_path = os.path.join(src_image_root, os.listdir(src_image_root)[0])
-    with Image.open(first_img_path) as im:
-        REAL_W, REAL_H = im.size  
+    # src_image_root = os.path.join(args.source_path, 'images')
+    # first_img_path = os.path.join(src_image_root, os.listdir(src_image_root)[0])
+    # with Image.open(first_img_path) as im:
+    #     REAL_W, REAL_H = im.size  
 
     REAL_H=512
     REAL_W=512
@@ -248,9 +248,9 @@ if __name__ == "__main__":
         print(f'Render visibility map done!')
 
     max_none_visible_thresh = 0.6
-    if select_view_method == 'none_visible_rate':
+    if select_view_method == 'none_visible_rate': ## stage 3
         need_inpaint_views = [i for i in range(len(novel_cams)) if none_visible_rate_list[i] < max_none_visible_thresh]         # delete views with large none visible regions
-    elif select_view_method == 'covisibility_rate':
+    elif select_view_method == 'covisibility_rate': ## stage 1, 2
         need_inpaint_views = select_need_inpaint_views(novel_cams, none_visible_rate_list, gaussians, int(args.select_inpaint_num), none_visible_rate_high_bound=max_none_visible_thresh, covisible_rate_high_bound=0.9)
     else:
         raise ValueError(f'Invalid select_view_method: {select_view_method}')

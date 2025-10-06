@@ -8,8 +8,6 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 import json
 
-
-
 if __name__ == '__main__':
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")
@@ -39,13 +37,18 @@ if __name__ == '__main__':
     split_json = json.load(open(split_json_path))
     
     images_root_path = os.path.join(data_path, 'images')
-    total_images_num = len(os.listdir(images_root_path))
+    image_files = os.listdir(images_root_path)
+    total_images_num = len(image_files)
+
+    png_files = [f for f in image_files if f.endswith('.png')]
+    min_image_id = min([int(f.replace('.png', '')) for f in png_files])
+
+    print(f"image id start from : {min_image_id}")
 
     ### get pseudo see3d views 
     split_train_ids = [int(view_id) for view_id in split_json['train']]
     split_test_ids = [int(view_id) for view_id in split_json['test']]
 
-    image_files = os.listdir(images_root_path)
     all_image_ids = []
     for file in image_files:
         if file.endswith('.png'):
@@ -55,10 +58,13 @@ if __name__ == '__main__':
             except:
                 continue
 
-    pseudo_view_ids = [vid for vid in all_image_ids if vid not in split_train_ids and vid not in split_test_ids]
+    actual_split_train_ids = [vid + min_image_id for vid in split_train_ids]
+    actual_split_test_ids = [vid + min_image_id for vid in split_test_ids]
 
-    chart_view_id = [view_id + 1 for view_id in split_train_ids]
-    see3d_view_id = [view_id + 1 for view_id in pseudo_view_ids]
+    pseudo_view_ids = [vid for vid in all_image_ids if vid not in actual_split_train_ids and vid not in actual_split_test_ids]
+
+    chart_view_id = actual_split_train_ids
+    see3d_view_id = pseudo_view_ids
 
     see3d_stage_path = os.path.join(see3d_root_dir, f'stage{see3d_stage}')
     os.makedirs(see3d_stage_path, exist_ok=True)
@@ -73,25 +79,20 @@ if __name__ == '__main__':
 
     valid_count = 0
     for i, view_id in enumerate(see3d_view_id):
-        # 检查图像是否存在
         src_img_path = os.path.join(images_root_path, f'{view_id:06d}.png')
         if not os.path.exists(src_img_path):
             print(f"[Warning] Image not found: {src_img_path}, skipping...")
             continue
             
-        # 检查相机参数是否存在
         key = f'{view_id:06d}'
         if key not in cam_dict:
             print(f"[Warning] Camera not found for view_id: {view_id}, skipping...")
             continue
             
-        # 只有当两者都存在时才保存
-        # 保存图像
         dst_img_path = os.path.join(inpaint_path, f'predict_warp_frame{valid_count:06d}.png')
         shutil.copy(src_img_path, dst_img_path)
         print(f'predict_warp_frame{valid_count:06d}.png copied')
         
-        # 保存相机参数
         see3d_viewpoint = cam_dict[key]          
         assert see3d_viewpoint.image_name.replace('.png', '') == key
         
