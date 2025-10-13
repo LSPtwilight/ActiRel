@@ -180,7 +180,7 @@ def training(
 
     # ===================================================================================
     # Initialize gaussians
-    max_gaussians_num = 9_000_000
+    max_gaussians_num = 9_500_000
     print(f"Max gaussians num: {max_gaussians_num}, use downsample gaussians: {use_downsample_gaussians}")
 
     # --- Process Input Views ---
@@ -465,12 +465,12 @@ def training(
     if use_depth_order_regularization:
         print(f"[INFO] Using depth order regularization for charts.")
 
-    print("==================================== [view num info] ====================================")
-    print(f"[INFO] Total number of views: {len(total_views_list)}, "
-          f"input views: {len(input_cams)}, "
-          f"see3d views: {len(see3d_gs_cameras_list)-dense_view_num}, "
-          f"dense views: {dense_view_num}")
-    print("=========================================================================================")
+    print("==================================== [training view num info] ====================================")
+    print(f"[INFO]         "
+        f"input views: {len(input_cams)}, "
+        f"see3d views: {len(see3d_gs_cameras_list) - dense_view_num}, "
+        f"dense views: {dense_view_num}. ")
+    print("==================================================================================================")
     print("[INFO] Starting training...")
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")

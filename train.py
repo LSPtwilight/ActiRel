@@ -331,12 +331,12 @@ if __name__ == '__main__':
         #             print(f"Copied and overwritten: {target_file}")
         run_command_safe(refine_free_gaussians_command)
 
-
+#    ====================  see3d inpainting stage  ================================
     # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
     run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
-    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
-    run_command_safe(mv_cmd)
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
+    # run_command_safe(mv_cmd)
     if args.dense_supervision:
         source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
         direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
@@ -355,8 +355,8 @@ if __name__ == '__main__':
     # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
     run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
-    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
-    run_command_safe(mv_cmd)
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
+    # run_command_safe(mv_cmd)
     if args.dense_supervision:
         source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
         direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
@@ -376,8 +376,8 @@ if __name__ == '__main__':
     run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
     anchor_view_id_json_path = os.path.join(see3d_root_path, 'stage3', 'anchor_view_id.json')
     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=anchor_view_id_json_path, see3d_root_path=see3d_root_path))
-    mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
-    run_command_safe(mv_cmd)
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
+    # run_command_safe(mv_cmd)
     if args.dense_supervision:
         source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
         direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
@@ -393,9 +393,15 @@ if __name__ == '__main__':
                 print(f"Copied and overwritten: {target_file}")
     run_command_safe(refine_free_gaussians_command)
 
-    # move split.json to free_gaussians_path for eval
-    cp_cmd_2 = f'cp {args.source_path}/split-{args.config_view_num}views.json {free_gaussians_path}'
-    run_command_safe(cp_cmd_2)
+    # see3d inpainting stage 4 + refine depth with 2D planes + continue gaussian training
+    run_command_safe(get_see3d_inpaint_command(4, args.select_inpaint_num))
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s3'
+    # run_command_safe(mv_cmd)
+    run_command_safe(refine_free_gaussians_command)
+
+#    ==========================  see3d stage  ================================
+
 
     # if not args.is_forward_facing_scene:                # not forward facing scene, use stage 2 and 3
     #     # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
@@ -414,12 +420,7 @@ if __name__ == '__main__':
     # else:
     #     print('NOTE: this is a forward facing scene, only use stage 1 prior')
 
-    # see3d inpainting stage 4 + refine depth with 2D planes + continue gaussian training
-    # run_command_safe(get_see3d_inpaint_command(4, args.select_inpaint_num))
-    # run_command_safe(plane_refine_depth_command_2)
-    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s3'
-    # run_command_safe(mv_cmd)
-    # run_command_safe(refine_free_gaussians_command)
+
 
     # render all images, export mesh, and evaluate
     run_command_safe(render_all_img_command)

@@ -28,7 +28,8 @@ from guidance.cam_utils import (
     generate_look_around_camera_poses, 
     generate_see3d_camera_by_view_angle,
     generate_see3d_camera_by_lookat_none_vis_plane,
-    generate_see3d_camera_by_lookat_all_plane
+    generate_see3d_camera_by_lookat_all_plane,
+    generate_see3d_camera_by_ceiling_edge
 )
 
 from matcha.dm_scene.charts import depths_to_points_parallel
@@ -133,11 +134,15 @@ if __name__ == "__main__":
     novel_poses, novel_cams = [], []
     plane_root_path = os.path.join(args.source_path, 'plane-refine-depths')
     vis_plane_pnts_path = os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_vis_global_3Dplane_points')
+    used_top_k = 5
+    if args.see3d_stage == 3:
+        used_top_k = 10
+    plane_all_points_dict = get_all_global_3Dpnts(args.source_path, plane_root_path, see3d_render_path, vis_plane_pnts_path, top_k=used_top_k)
+     
     if args.see3d_stage == 1:
         used_fov_deg = 80
         only_warp_input_views = False
         select_view_method = 'covisibility_rate'
-        used_top_k = 5
 
         # look at scene center
         novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
@@ -153,7 +158,6 @@ if __name__ == "__main__":
         used_fov_deg = 80
         only_warp_input_views = False
         select_view_method = 'covisibility_rate'
-        used_top_k = 5
 
         # look around in input views position
         novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=used_fov_deg, n_frames=60,width=REAL_W, height=REAL_H)
@@ -162,17 +166,33 @@ if __name__ == "__main__":
 
     elif args.see3d_stage == 3:
         used_fov_deg = 100
-        used_top_k = 10
         only_warp_input_views = True
         select_view_method = 'none_visible_rate'
+        
+
+    elif args.see3d_stage == 4:
+        used_fov_deg = 100
+        only_warp_input_views = True
+        select_view_method = 'covisibility_rate'
+        novel_poses_wf, novel_cams_wf = generate_see3d_camera_by_ceiling_edge(
+            train_viewpoints,
+            visibility_grid,
+            n_frames=60,
+            offset_from_center_z=0.22,  
+            width=REAL_W,
+            height=REAL_H,
+            fovy_deg=used_fov_deg
+        )
+        novel_poses.extend(novel_poses_wf)
+        novel_cams.extend(novel_cams_wf)
 
     else:
         raise ValueError(f'Invalid see3d_stage: {args.see3d_stage}')
     
-    plane_all_points_dict = get_all_global_3Dpnts(args.source_path, plane_root_path, see3d_render_path, vis_plane_pnts_path, top_k=used_top_k)
-    novel_poses_3, novel_cams_3 = generate_see3d_camera_by_lookat_all_plane(train_viewpoints, visibility_grid, plane_all_points_dict, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
-    novel_poses.extend(novel_poses_3)
-    novel_cams.extend(novel_cams_3)
+    if args.see3d_stage != 4 :
+        novel_poses_3, novel_cams_3 = generate_see3d_camera_by_lookat_all_plane(train_viewpoints, visibility_grid, plane_all_points_dict, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
+        novel_poses.extend(novel_poses_3)
+        novel_cams.extend(novel_cams_3)
 
     # render gs
     gs_output_dir = os.path.join(novel_views_save_root_path, 'raw-gs')

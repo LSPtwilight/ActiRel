@@ -6,7 +6,7 @@ export no_proxy="localhost,127.0.0.1"
 
 failed_scans=""
 
-for i in 1 ; do
+for i in 3 4 5 6 7 8 ; do
     timestamp=$(date '+%Y-%m-%d-%H-%M-%S')
     echo "Training scan$i"
     

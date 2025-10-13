@@ -1101,6 +1101,216 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
 
     return new_poses, cur_cams
 
+def generate_see3d_camera_by_wall_foot_perimeter(
+    train_cams,
+    visibility_grid,
+    n_frames=80,                 # 总采样点数，沿四条边均匀分布
+    offset_from_ceiling=0.1,   # 相机离天花板的距离
+    shrink_ratio=0.9,          # 向内缩小的比例（0.9 表示缩小到原长方形的 90%）
+    width=512,
+    height=512,
+    fovy_deg=60,
+    fovx_deg=None,
+):
+    """
+    Generate cameras along the perimeter of a shrunken rectangle at a fixed height below ceiling,
+    looking straight down (negative Z direction). The rectangle is derived from the intersection
+    of a horizontal plane (at cam_z) with the visibility grid's walls.
+    """
+
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    # Get visibility grid boundary
+    x_min, y_min, z_min, x_max, y_max, z_max = visibility_grid.get_visible_boundary()
+    x_min, y_min, z_min = x_min.item(), y_min.item(), z_min.item()
+    x_max, y_max, z_max = x_max.item(), y_max.item(), z_max.item()
+
+    print(f"[DEBUG] Visibility grid z range: {z_min:.3f} ~ {z_max:.3f}")
+
+    # Camera height: slightly below ceiling
+    cam_z = z_max - offset_from_ceiling
+    cam_z = max(cam_z, z_min + 0.1)  # Ensure not too close to ground
+    print(f"[DEBUG] Proposed camera z: {cam_z:.3f}")
+
+    # Define the original rectangle at height cam_z (intersection with walls)
+    # Corners: (x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)
+    original_corners = np.array([
+        [x_min, y_min],
+        [x_max, y_min],
+        [x_max, y_max],
+        [x_min, y_max]
+    ])
+
+    # Shrink the rectangle inward by shrink_ratio
+    center_x = (x_min + x_max) / 2
+    center_y = (y_min + y_max) / 2
+    half_width = (x_max - x_min) / 2 * shrink_ratio
+    half_height = (y_max - y_min) / 2 * shrink_ratio
+    shrunk_corners = np.array([
+        [center_x - half_width, center_y - half_height],  # bottom-left
+        [center_x + half_width, center_y - half_height],  # bottom-right
+        [center_x + half_width, center_y + half_height],  # top-right
+        [center_x - half_width, center_y + half_height]   # top-left
+    ])
+
+    # Calculate total perimeter length
+    side_lengths = [
+        np.linalg.norm(shrunk_corners[1] - shrunk_corners[0]),  # bottom
+        np.linalg.norm(shrunk_corners[2] - shrunk_corners[1]),  # right
+        np.linalg.norm(shrunk_corners[3] - shrunk_corners[2]),  # top
+        np.linalg.norm(shrunk_corners[0] - shrunk_corners[3])   # left
+    ]
+    total_perimeter = sum(side_lengths)
+
+    # Distribute n_frames along the four sides proportionally
+    frames_per_side = [int(n_frames * length / total_perimeter) for length in side_lengths]
+    # Adjust to ensure sum equals n_frames
+    diff = n_frames - sum(frames_per_side)
+    for i in range(diff):
+        frames_per_side[i % 4] += 1
+
+    # Generate camera positions along each side
+    cam_positions = []
+    for i in range(4):
+        start = shrunk_corners[i]
+        end = shrunk_corners[(i + 1) % 4]
+        num_frames = frames_per_side[i]
+        if num_frames > 0:
+            t = np.linspace(0, 1, num_frames, endpoint=False)
+            side_positions = start + t[:, None] * (end - start)
+            cam_positions.append(side_positions)
+
+    cam_positions = np.concatenate(cam_positions, axis=0)  # [n_frames, 2]
+    cam_positions = np.hstack([cam_positions, np.full((len(cam_positions), 1), cam_z)])  # [n_frames, 3]
+
+    novel_poses = []
+    novel_cams = []
+    device = visibility_grid.device
+
+    for i in range(len(cam_positions)):
+        cam_pos = cam_positions[i]
+
+        # Check visibility
+        cam_center_tensor = torch.from_numpy(cam_pos).float().unsqueeze(0).to(device)
+        if not visibility_grid.check_valid_camera_center(cam_center_tensor)[0]:
+            continue
+
+        # Build pose: look straight down (negative Z direction)
+        # In COLMAP convention: X-right, Y-down, Z-forward
+        R = np.array([
+            [1,  0,  0],   # right
+            [0, -1,  0],   # up (down in COLMAP)
+            [0,  0, -1]    # forward (down)
+        ])
+
+        pose = np.eye(4)
+        pose[:3, :3] = R
+        pose[:3, 3] = cam_pos
+
+        try:
+            cur_cam = MiniCam(pose.astype(np.float32), width, height, fovy, fovx)
+            novel_poses.append(pose)
+            novel_cams.append(cur_cam)
+        except Exception as e:
+            continue
+
+    print(f"[ INFO ] Generated {len(novel_cams)} wall-foot perimeter cameras.")
+    if len(novel_cams) == 0:
+        print("[ WARN ] No cameras passed visibility check. Try reducing offset_from_ceiling or increasing shrink_ratio.")
+    return novel_poses, novel_cams
+
+def generate_see3d_camera_by_ceiling_edge(
+    train_cams,
+    visibility_grid,
+    n_frames=60,               # 增加到 60，提高边缘采样密度
+    offset_from_center_z=0.2,  # 相机在场景中心上方多少米
+    width=512,
+    height=512,
+    fovy_deg=60,
+    fovx_deg=None,
+):
+    """
+    Generate cameras along an elliptical path at a fixed height above scene center,
+    looking straight down (negative Z direction), with positions biased toward scene boundary.
+    """
+
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    # Get all training camera centers
+    cam_centers = np.stack([cam.camera_center.cpu().numpy() for cam in train_cams], axis=0)
+    x_min, x_max = cam_centers[:, 0].min(), cam_centers[:, 0].max()
+    y_min, y_max = cam_centers[:, 1].min(), cam_centers[:, 1].max()
+    z_min, z_max = cam_centers[:, 2].min(), cam_centers[:, 2].max()
+
+    print(f"[DEBUG] Train cam z range: {z_min:.3f} ~ {z_max:.3f}")
+
+    # Scene center
+    center_x = (x_min + x_max) / 2
+    center_y = (y_min + y_max) / 2
+    center_z = (z_min + z_max) / 2
+
+    # Camera height: slightly above scene center
+    cam_z = center_z + offset_from_center_z
+    cam_z = min(cam_z, z_max - 0.1)  # Ensure not too close to top
+    print(f"[DEBUG] Proposed camera z: {cam_z:.3f}")
+
+    # 椭圆半长轴和半短轴略大于包围盒的一半
+    radius_x = (x_max - x_min) / 2 * 1.05  # 略大一点，确保覆盖边缘
+    radius_y = (y_max - y_min) / 2 * 1.05
+
+    # Sample angles
+    angles = np.linspace(0, 2 * np.pi, n_frames, endpoint=False)
+    cam_positions = np.stack([
+        center_x + radius_x * np.cos(angles),
+        center_y + radius_y * np.sin(angles),
+        np.full(n_frames, cam_z)
+    ], axis=1)
+
+    novel_poses = []
+    novel_cams = []
+    device = visibility_grid.device
+
+    for i in range(n_frames):
+        cam_pos = cam_positions[i]
+
+        # Check visibility
+        cam_center_tensor = torch.from_numpy(cam_pos).float().unsqueeze(0).to(device)
+        if not visibility_grid.check_valid_camera_center(cam_center_tensor)[0]:
+            continue
+
+        # Build pose: look straight down (negative Z direction)
+        # In COLMAP convention:
+        #   X-right, Y-down, Z-forward
+        # So to look down, we want:
+        #   forward = [0, 0, -1]  (camera's Z-axis points down)
+        #   right = [1, 0, 0]     (camera's X-axis points right)
+        #   up = [0, -1, 0]       (camera's Y-axis points down -> but in COLMAP, Y is down, so this is correct)
+        #
+        # But note: in c2w matrix, the columns are [right, up, forward]
+        R = np.array([
+            [1,  0,  0],   # right
+            [0, -1,  0],   # up (down in COLMAP)
+            [0,  0, -1]    # forward (down)
+        ])
+
+        pose = np.eye(4)
+        pose[:3, :3] = R
+        pose[:3, 3] = cam_pos
+
+        try:
+            cur_cam = MiniCam(pose.astype(np.float32), width, height, fovy, fovx)
+            novel_poses.append(pose)
+            novel_cams.append(cur_cam)
+        except Exception as e:
+            continue
+
+    print(f"[ INFO ] Generated {len(novel_cams)} downward-looking cameras.")
+    if len(novel_cams) == 0:
+        print("[ WARN ] No cameras passed visibility check. Try reducing offset_from_center_z or increasing n_frames.")
+    return novel_poses, novel_cams
+
 # add random sample cameras in not covered area
 def generate_random_sample_cameras(selected_cams, visibility_grid, train_cams, max_side_res=5, min_side_res=3, width=512, height=512, fovy_deg=60, fovx_deg=None):
     """
@@ -1463,7 +1673,7 @@ def get_pixel_to_points_tensor(camera, points, use_depth_threshold=True, depth_t
     
     # Find unique pixel indices and their counts
     unique_pixels, pixel_counts = torch.unique_consecutive(sorted_pixel_indices, return_counts=True)
-    max_points_per_pixel = min(pixel_counts.max().item(), 500)
+    max_points_per_pixel = min(pixel_counts.max().item(), 200)
     
     # Create output tensors
     pixel_map = torch.zeros((H, W, max_points_per_pixel), dtype=torch.int, device=device)
