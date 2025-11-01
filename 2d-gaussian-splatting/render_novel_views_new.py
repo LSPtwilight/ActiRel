@@ -29,7 +29,9 @@ from guidance.cam_utils import (
     generate_see3d_camera_by_view_angle,
     generate_see3d_camera_by_lookat_none_vis_plane,
     generate_see3d_camera_by_lookat_all_plane,
-    generate_see3d_camera_by_ceiling_edge
+    generate_see3d_camera_by_ceiling_edge,
+    generate_cameras_on_ellipse_looking_at,
+    generate_cameras_from_positions_looking_at
 )
 
 from matcha.dm_scene.charts import depths_to_points_parallel
@@ -129,6 +131,7 @@ if __name__ == "__main__":
 
     visibility_grid = VisibilityGrid(bbox_min, bbox_max, grid_resolution, train_viewpoints, train_view_depths)
     visibility_grid.vis_invisible_pnts(os.path.join(novel_views_save_root_path, 'invisible_points.ply'))
+    #visibility_grid.vis_visible_vs_invisible(os.path.join(novel_views_save_root_path, 'invisible_points.ply'), downsample=15)
 
     # generate novel cameras
     novel_poses, novel_cams = [], []
@@ -171,20 +174,37 @@ if __name__ == "__main__":
         
 
     elif args.see3d_stage == 4:
-        used_fov_deg = 100
-        only_warp_input_views = True
+        only_warp_input_views = False
         select_view_method = 'covisibility_rate'
-        novel_poses_wf, novel_cams_wf = generate_see3d_camera_by_ceiling_edge(
-            train_viewpoints,
-            visibility_grid,
-            n_frames=60,
-            offset_from_center_z=0.22,  
-            width=REAL_W,
-            height=REAL_H,
-            fovy_deg=used_fov_deg
+        target_point = np.array([0.21, 1.25, -1.0]) 
+        novel_poses_plane, novel_cams_plane = generate_cameras_on_ellipse_looking_at(
+            train_cams=train_viewpoints,
+            target_point=target_point,
+            n_frames=6,
+            height_offset=0.3,
+            scale=1.0,
+            width=512,
+            height=512,
+            fovy_deg=60
         )
-        novel_poses.extend(novel_poses_wf)
-        novel_cams.extend(novel_cams_wf)
+        novel_poses.extend(novel_poses_plane)
+        novel_cams.extend(novel_cams_plane)
+
+        # cam_positions = np.array([
+        #     [-0.1, -0.086, 1.32],
+        #     [0.26, 0.18, 0.88],
+        #     [ -0.9531, 0.9645, 0.6753],
+        # ])
+
+        # novel_poses_direct, novel_cams_direct = generate_cameras_from_positions_looking_at(
+        #     cam_positions=cam_positions,
+        #     target_point=target_point,
+        #     width=512,
+        #     height=512,
+        #     fovy_deg=60
+        # )
+        # novel_poses.extend(novel_poses_direct)
+        # novel_cams.extend(novel_cams_direct)
 
     else:
         raise ValueError(f'Invalid see3d_stage: {args.see3d_stage}')
@@ -321,6 +341,34 @@ if __name__ == "__main__":
     # save need inpaint views cameras
     save_cameras['n_views'] = len(need_inpaint_views_cams)
     np.savez(os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_see3d_cameras.npz'), **save_cameras)
+
+    # save filtered cameras 
+    filtered_indices = [i for i in range(len(novel_cams)) if i not in need_inpaint_views]
+    filtered_cams = [novel_cams[i] for i in filtered_indices]
+    filtered_none_visible_rates = [none_visible_rate_list[i] for i in filtered_indices]
+
+    filtered_cameras = {}
+    filtered_cameras['train_views'] = len(train_viewpoints)
+    for idx, (cam, none_vis_rate) in enumerate(zip(filtered_cams, filtered_none_visible_rates)):
+        filtered_cameras[f'R_{idx:06d}'] = cam.R
+        filtered_cameras[f'T_{idx:06d}'] = cam.T
+        filtered_cameras[f'FoVx_{idx:06d}'] = cam.FoVx
+        filtered_cameras[f'FoVy_{idx:06d}'] = cam.FoVy
+        filtered_cameras[f'image_width_{idx:06d}'] = cam.image_width
+        filtered_cameras[f'image_height_{idx:06d}'] = cam.image_height
+        filtered_cameras[f'none_visible_rate_{idx:06d}'] = none_vis_rate
+
+    filtered_cameras['n_views'] = len(filtered_cams)
+    filtered_cam_path = os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_filtered_cameras.npz')
+    np.savez(filtered_cam_path, **filtered_cameras)
+    filtered_rgb_dir = os.path.join(novel_views_save_root_path, 'filtered-rgb')
+    os.makedirs(filtered_rgb_dir, exist_ok=True)
+    for idx, ori_id in enumerate(filtered_indices):
+        src_path = os.path.join(gs_output_dir, f'ori_warp_frame{ori_id:06d}.png')
+        dst_path = os.path.join(filtered_rgb_dir, f'filtered_rgb_{idx:06d}.png')
+        if os.path.exists(src_path):
+            shutil.copy(src_path, dst_path)
+    print(f'Saved filtered cameras (with none_visible_rate) to {filtered_cam_path}')
 
     print(f'See3D stage {args.see3d_stage} save done!')
 

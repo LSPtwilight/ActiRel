@@ -1101,6 +1101,9 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
 
     return new_poses, cur_cams
 
+##############################################################################################
+################################################################################################
+
 def generate_see3d_camera_by_wall_foot_perimeter(
     train_cams,
     visibility_grid,
@@ -1310,6 +1313,163 @@ def generate_see3d_camera_by_ceiling_edge(
     if len(novel_cams) == 0:
         print("[ WARN ] No cameras passed visibility check. Try reducing offset_from_center_z or increasing n_frames.")
     return novel_poses, novel_cams
+
+def generate_cameras_on_ellipse_looking_at(
+    train_cams,
+    target_point,
+    n_frames=12,
+    height_offset=0.3,
+    scale=1.0,
+    width=512,
+    height=512,
+    fovy_deg=60,
+    fovx_deg=None,
+):
+    def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+        vec2 = safe_normalize(-lookdir)
+        vec1 = safe_normalize(up)
+        vec0 = safe_normalize(np.cross(vec1, vec2))
+        vec1 = safe_normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, position], axis=1)
+        return m
+
+    # Get scene center and bounds
+    train_centers = np.stack([c.camera_center.cpu().numpy() for c in train_cams], axis=0)
+    scene_center = train_centers.mean(axis=0)
+    x_range = (train_centers[:, 0].max() - train_centers[:, 0].min()) / 2.0
+    y_range = (train_centers[:, 1].max() - train_centers[:, 1].min()) / 2.0
+
+    # Use circle (not ellipse)
+    radius = scale * (x_range + y_range) / 2.0
+
+    # Circle center (elevated)
+    circle_center = np.array([
+        scene_center[0],
+        scene_center[1],
+        scene_center[2] + height_offset
+    ])
+
+    # >>>>>>>>>> 新增：圆心向 target XY 方向偏移 <<<<<<<<<<
+    bias_factor = 0.2  # 可调参数，建议 0.2~0.5
+    direction_to_target_xy = target_point[:2] - scene_center[:2]
+    dist_to_target_xy = np.linalg.norm(direction_to_target_xy)
+    if dist_to_target_xy > 1e-6:
+        unit_dir = direction_to_target_xy / dist_to_target_xy
+        circle_center[:2] += bias_factor * radius * unit_dir
+
+    # Generate full circle
+    angles = np.linspace(0, 2 * np.pi, n_frames * 2, endpoint=False)
+    full_positions = np.stack([
+        circle_center[0] + radius * np.cos(angles),
+        circle_center[1] + radius * np.sin(angles),
+        np.full(len(angles), circle_center[2])
+    ], axis=1)
+
+    # Direction from circle center to target (in XY plane)
+    target_dir_xy = target_point[:2] - circle_center[:2]
+    if np.linalg.norm(target_dir_xy) < 1e-6:
+        target_dir_xy = np.array([1.0, 0.0])  # default forward
+    else:
+        target_dir_xy = target_dir_xy / np.linalg.norm(target_dir_xy)
+
+    # For each camera, compute its direction from circle center (XY)
+    cam_dirs_xy = full_positions[:, :2] - circle_center[:2]
+    cam_dirs_xy_norm = np.linalg.norm(cam_dirs_xy, axis=1, keepdims=True) + 1e-8
+    cam_dirs_xy = cam_dirs_xy / cam_dirs_xy_norm
+
+    # Keep only points where angle <= 90° (dot >= 0)
+    dot_products = np.sum(cam_dirs_xy * target_dir_xy, axis=1)
+    half_mask = dot_products >= 0
+    half_positions = full_positions[half_mask]
+
+    if len(half_positions) == 0:
+        half_positions = full_positions[:1]
+
+    # Sample up to n_frames
+    if len(half_positions) > n_frames:
+        indices = np.random.choice(len(half_positions), n_frames, replace=False)
+        cam_positions = half_positions[indices]
+    else:
+        cam_positions = half_positions
+
+    # Build poses
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+    up = np.array([0, 0, -1])  # COLMAP convention
+
+    novel_poses = []
+    novel_cams = []
+
+    for cam_pos in cam_positions:
+        pose = viewmatrix(cam_pos - target_point, up, cam_pos)
+        homogeneous_row = np.zeros((1, 4))
+        homogeneous_row[0, 3] = 1
+        pose = np.concatenate([pose, homogeneous_row], axis=0)
+
+        try:
+            cam = MiniCam(pose.astype(np.float32), width, height, fovy=fovy, fovx=fovx)
+            novel_poses.append(pose)
+            novel_cams.append(cam)
+        except:
+            continue
+
+    print(f"[INFO] Generated {len(novel_cams)} cameras on SEMICIRCLE looking at {target_point}")
+    return novel_poses, novel_cams
+
+def generate_cameras_from_positions_looking_at(
+    cam_positions,
+    target_point,
+    width=512,
+    height=512,
+    fovy_deg=60,
+    fovx_deg=None,
+):
+    """
+    Generate cameras from given positions looking at a target point.
+    
+    Returns:
+        novel_poses: List of c2w matrices (np.ndarray, [4,4])
+        novel_cams: List of MiniCam objects
+    """
+    def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
+        """Construct lookat view matrix (copied from generate_see3d_camera_by_lookat_all_plane)."""
+        vec2 = safe_normalize(-lookdir)
+        vec1 = safe_normalize(up)
+        vec0 = safe_normalize(np.cross(vec1, vec2))
+        vec1 = safe_normalize(np.cross(vec2, vec0))
+        m = np.stack([vec0, vec1, vec2, position], axis=1)
+        return m
+
+    # Parse FOV
+    fovy = np.deg2rad(fovy_deg)
+    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+
+    # Hard-coded up vector (COLMAP convention)
+    up = np.array([0, 0, -1])
+
+    novel_poses = []
+    novel_cams = []
+
+    for cam_pos in cam_positions:
+        pose = viewmatrix(cam_pos - target_point, up, cam_pos)
+        homogeneous_row = np.zeros((1, 4))
+        homogeneous_row[0, 3] = 1
+        pose = np.concatenate([pose, homogeneous_row], axis=0)
+
+        try:
+            cam = MiniCam(pose.astype(np.float32), width, height, fovy=fovy, fovx=fovx)
+            novel_poses.append(pose)
+            novel_cams.append(cam)
+        except Exception as e:
+            continue
+
+    print(f"[INFO] Generated {len(novel_cams)} cameras from given positions looking at {target_point}")
+    return novel_poses, novel_cams
+
+
+##############################################################################################
+##############################################################################################
+
 
 # add random sample cameras in not covered area
 def generate_random_sample_cameras(selected_cams, visibility_grid, train_cams, max_side_res=5, min_side_res=3, width=512, height=512, fovy_deg=60, fovx_deg=None):
