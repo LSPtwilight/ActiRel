@@ -52,7 +52,7 @@ if __name__ == '__main__':
         command = f"python 2d-gaussian-splatting/render_see3d_views.py --source_path {args.source_path} --model_path {args.model_path} --iteration {args.iteration} --see3d_root_dir {see3d_root_dir} --see3d_stage {args.see3d_stage}"
         run_command_safe(command)
     else:
-        command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir}"
+        command = f"python 2d-gaussian-splatting/guidance/see3d_util.py --ref_imgs_dir {ref_image_path} --warp_root_dir {warp_image_path} --output_root_dir {output_root_dir} --see3d_stage {args.see3d_stage}"
         run_command_safe(command)
 
     # 3. generate depth and normal

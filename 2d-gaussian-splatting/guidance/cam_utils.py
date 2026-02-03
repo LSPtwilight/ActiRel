@@ -4,6 +4,10 @@ from scipy.spatial.transform import Rotation
 from scipy.spatial.transform import Slerp
 from scipy.interpolate import interp1d
 import pytransform3d.visualizer as pv
+from scipy.ndimage import sobel, uniform_filter,binary_erosion, label
+from sklearn.cluster import KMeans
+import cv2
+import os
 
 import torch
 import random
@@ -538,7 +542,7 @@ def generate_interpolated_camera_poses(train_cams, visibility_grid, interpolate_
     
     return interpolated_c2ws, cur_cams
 
-def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, train_view_points, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, train_view_points, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None, seed=0):
 
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
         """Construct lookat view matrix."""
@@ -548,6 +552,11 @@ def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, t
         vec1 = safe_normalize(np.cross(vec2, vec0))
         m = np.stack([vec0, vec1, vec2, position], axis=1)
         return m
+
+    rng_backup = torch.random.get_rng_state()
+    if torch.cuda.is_available():
+        cuda_backup = torch.cuda.get_rng_state()
+    torch.manual_seed(seed)   
 
     # get fovy and fovx
     fovy = np.deg2rad(fovy_deg)
@@ -577,6 +586,10 @@ def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, t
         (torch.rand(n_frames+1, device=device) * (z_range_scale[1] - z_range_scale[0]) + z_range_scale[0]) * z_range * torch.cos(theta) + traj_center[2],
     ], dim=-1)
     novel_cam_centers = novel_cam_centers[:-1]          # Throw away duplicated last position.
+
+    torch.random.set_rng_state(rng_backup)
+    if torch.cuda.is_available():
+        torch.cuda.set_rng_state(cuda_backup)
 
     # check valid novel camera center
     novel_cam_centers = torch.tensor(novel_cam_centers, dtype=torch.float32, device=device)
@@ -611,10 +624,16 @@ def generate_see3d_camera_by_lookat(train_cams, visibility_grid, train_depths, t
 
     return new_poses, cur_cams
 
-def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None, seed=0):
     """
     Generate see3d camera by view angle.
     """
+
+    rng_backup = torch.random.get_rng_state()
+    if torch.cuda.is_available():
+        cuda_backup = torch.cuda.get_rng_state()
+    torch.manual_seed(seed)  
+
     # get fovy and fovx
     fovy = np.deg2rad(fovy_deg)
     fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
@@ -643,6 +662,10 @@ def generate_see3d_camera_by_view_angle(train_cams, visibility_grid, traj_center
         (torch.rand(n_frames+1, device=device) * (z_range_scale[1] - z_range_scale[0]) + z_range_scale[0]) * z_range * torch.cos(theta) + traj_center[2],
     ], dim=-1)
     novel_cam_centers = novel_cam_centers[:-1]          # Throw away duplicated last position.
+
+    torch.random.set_rng_state(rng_backup)
+    if torch.cuda.is_available():
+        torch.cuda.set_rng_state(cuda_backup)
 
     # check valid novel camera center
     novel_cam_centers = torch.tensor(novel_cam_centers, dtype=torch.float32, device=device)
@@ -754,6 +777,7 @@ def generate_see3d_camera_by_lookat_none_vis_plane(train_cams, visibility_grid, 
         cur_cams.append(cur_cam)
 
     return new_poses, cur_cams
+
 
 def generate_see3d_camera_by_lookat_all_plane(train_cams, visibility_grid, plane_all_points_dict, traj_center=None, width=512, height=512, fovy_deg=60, fovx_deg=None):
     """
@@ -995,7 +1019,7 @@ def select_need_inpaint_views(novel_cams, gs_none_visible_rate, gaussians, selec
     # print(f"Selected {len(selected_view_ids)} views for inpainting")
     return selected_view_ids
 
-def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None):
+def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, traj_center=None, n_frames=60, width=512, height=512, fovy_deg=60, fovx_deg=None, seed=0):
     """
     Select views that need inpainting
     For object-centric scenes, e.g. Mip-NeRF 360, CO3D
@@ -1023,6 +1047,11 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
         vec1 = safe_normalize(np.cross(vec2, vec0))
         m = np.stack([vec0, vec1, vec2, position], axis=1)
         return m
+
+    rng_backup = torch.random.get_rng_state()
+    if torch.cuda.is_available():
+        cuda_backup = torch.cuda.get_rng_state()
+    torch.manual_seed(seed)
 
     # get fovy and fovx
     fovy = np.deg2rad(fovy_deg)
@@ -1099,232 +1128,25 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
         cur_cam = MiniCam(c2w, width, height, fovy=fovy, fovx=fovx)
         cur_cams.append(cur_cam)
 
+    torch.random.set_rng_state(rng_backup)
+    if torch.cuda.is_available():
+        torch.cuda.set_rng_state(cuda_backup)
+
     return new_poses, cur_cams
 
 ##############################################################################################
 ################################################################################################
 
-def generate_see3d_camera_by_wall_foot_perimeter(
-    train_cams,
-    visibility_grid,
-    n_frames=80,                 # 总采样点数，沿四条边均匀分布
-    offset_from_ceiling=0.1,   # 相机离天花板的距离
-    shrink_ratio=0.9,          # 向内缩小的比例（0.9 表示缩小到原长方形的 90%）
-    width=512,
-    height=512,
-    fovy_deg=60,
-    fovx_deg=None,
-):
+def generate_see3d_camera_by_fps_planes(train_cams, visibility_grid, plane_all_points_dict, n_samples=80, traj_center=None, width=512, height=512, fovy_deg=60, fovx_deg=None):
     """
-    Generate cameras along the perimeter of a shrunken rectangle at a fixed height below ceiling,
-    looking straight down (negative Z direction). The rectangle is derived from the intersection
-    of a horizontal plane (at cam_z) with the visibility grid's walls.
+    针对所有平面点进行 FPS 采样，生成 80 个分布均匀的观察视角。
+    限制相机 Z 轴必须在场景中心 Z 值上方 0.35 - 0.5 之间。
     """
 
-    fovy = np.deg2rad(fovy_deg)
-    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
+    def safe_normalize(v):
+        norm = np.linalg.norm(v, axis=-1, keepdims=True)
+        return np.where(norm > 1e-6, v / norm, v)
 
-    # Get visibility grid boundary
-    x_min, y_min, z_min, x_max, y_max, z_max = visibility_grid.get_visible_boundary()
-    x_min, y_min, z_min = x_min.item(), y_min.item(), z_min.item()
-    x_max, y_max, z_max = x_max.item(), y_max.item(), z_max.item()
-
-    print(f"[DEBUG] Visibility grid z range: {z_min:.3f} ~ {z_max:.3f}")
-
-    # Camera height: slightly below ceiling
-    cam_z = z_max - offset_from_ceiling
-    cam_z = max(cam_z, z_min + 0.1)  # Ensure not too close to ground
-    print(f"[DEBUG] Proposed camera z: {cam_z:.3f}")
-
-    # Define the original rectangle at height cam_z (intersection with walls)
-    # Corners: (x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)
-    original_corners = np.array([
-        [x_min, y_min],
-        [x_max, y_min],
-        [x_max, y_max],
-        [x_min, y_max]
-    ])
-
-    # Shrink the rectangle inward by shrink_ratio
-    center_x = (x_min + x_max) / 2
-    center_y = (y_min + y_max) / 2
-    half_width = (x_max - x_min) / 2 * shrink_ratio
-    half_height = (y_max - y_min) / 2 * shrink_ratio
-    shrunk_corners = np.array([
-        [center_x - half_width, center_y - half_height],  # bottom-left
-        [center_x + half_width, center_y - half_height],  # bottom-right
-        [center_x + half_width, center_y + half_height],  # top-right
-        [center_x - half_width, center_y + half_height]   # top-left
-    ])
-
-    # Calculate total perimeter length
-    side_lengths = [
-        np.linalg.norm(shrunk_corners[1] - shrunk_corners[0]),  # bottom
-        np.linalg.norm(shrunk_corners[2] - shrunk_corners[1]),  # right
-        np.linalg.norm(shrunk_corners[3] - shrunk_corners[2]),  # top
-        np.linalg.norm(shrunk_corners[0] - shrunk_corners[3])   # left
-    ]
-    total_perimeter = sum(side_lengths)
-
-    # Distribute n_frames along the four sides proportionally
-    frames_per_side = [int(n_frames * length / total_perimeter) for length in side_lengths]
-    # Adjust to ensure sum equals n_frames
-    diff = n_frames - sum(frames_per_side)
-    for i in range(diff):
-        frames_per_side[i % 4] += 1
-
-    # Generate camera positions along each side
-    cam_positions = []
-    for i in range(4):
-        start = shrunk_corners[i]
-        end = shrunk_corners[(i + 1) % 4]
-        num_frames = frames_per_side[i]
-        if num_frames > 0:
-            t = np.linspace(0, 1, num_frames, endpoint=False)
-            side_positions = start + t[:, None] * (end - start)
-            cam_positions.append(side_positions)
-
-    cam_positions = np.concatenate(cam_positions, axis=0)  # [n_frames, 2]
-    cam_positions = np.hstack([cam_positions, np.full((len(cam_positions), 1), cam_z)])  # [n_frames, 3]
-
-    novel_poses = []
-    novel_cams = []
-    device = visibility_grid.device
-
-    for i in range(len(cam_positions)):
-        cam_pos = cam_positions[i]
-
-        # Check visibility
-        cam_center_tensor = torch.from_numpy(cam_pos).float().unsqueeze(0).to(device)
-        if not visibility_grid.check_valid_camera_center(cam_center_tensor)[0]:
-            continue
-
-        # Build pose: look straight down (negative Z direction)
-        # In COLMAP convention: X-right, Y-down, Z-forward
-        R = np.array([
-            [1,  0,  0],   # right
-            [0, -1,  0],   # up (down in COLMAP)
-            [0,  0, -1]    # forward (down)
-        ])
-
-        pose = np.eye(4)
-        pose[:3, :3] = R
-        pose[:3, 3] = cam_pos
-
-        try:
-            cur_cam = MiniCam(pose.astype(np.float32), width, height, fovy, fovx)
-            novel_poses.append(pose)
-            novel_cams.append(cur_cam)
-        except Exception as e:
-            continue
-
-    print(f"[ INFO ] Generated {len(novel_cams)} wall-foot perimeter cameras.")
-    if len(novel_cams) == 0:
-        print("[ WARN ] No cameras passed visibility check. Try reducing offset_from_ceiling or increasing shrink_ratio.")
-    return novel_poses, novel_cams
-
-def generate_see3d_camera_by_ceiling_edge(
-    train_cams,
-    visibility_grid,
-    n_frames=60,               # 增加到 60，提高边缘采样密度
-    offset_from_center_z=0.2,  # 相机在场景中心上方多少米
-    width=512,
-    height=512,
-    fovy_deg=60,
-    fovx_deg=None,
-):
-    """
-    Generate cameras along an elliptical path at a fixed height above scene center,
-    looking straight down (negative Z direction), with positions biased toward scene boundary.
-    """
-
-    fovy = np.deg2rad(fovy_deg)
-    fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
-
-    # Get all training camera centers
-    cam_centers = np.stack([cam.camera_center.cpu().numpy() for cam in train_cams], axis=0)
-    x_min, x_max = cam_centers[:, 0].min(), cam_centers[:, 0].max()
-    y_min, y_max = cam_centers[:, 1].min(), cam_centers[:, 1].max()
-    z_min, z_max = cam_centers[:, 2].min(), cam_centers[:, 2].max()
-
-    print(f"[DEBUG] Train cam z range: {z_min:.3f} ~ {z_max:.3f}")
-
-    # Scene center
-    center_x = (x_min + x_max) / 2
-    center_y = (y_min + y_max) / 2
-    center_z = (z_min + z_max) / 2
-
-    # Camera height: slightly above scene center
-    cam_z = center_z + offset_from_center_z
-    cam_z = min(cam_z, z_max - 0.1)  # Ensure not too close to top
-    print(f"[DEBUG] Proposed camera z: {cam_z:.3f}")
-
-    # 椭圆半长轴和半短轴略大于包围盒的一半
-    radius_x = (x_max - x_min) / 2 * 1.05  # 略大一点，确保覆盖边缘
-    radius_y = (y_max - y_min) / 2 * 1.05
-
-    # Sample angles
-    angles = np.linspace(0, 2 * np.pi, n_frames, endpoint=False)
-    cam_positions = np.stack([
-        center_x + radius_x * np.cos(angles),
-        center_y + radius_y * np.sin(angles),
-        np.full(n_frames, cam_z)
-    ], axis=1)
-
-    novel_poses = []
-    novel_cams = []
-    device = visibility_grid.device
-
-    for i in range(n_frames):
-        cam_pos = cam_positions[i]
-
-        # Check visibility
-        cam_center_tensor = torch.from_numpy(cam_pos).float().unsqueeze(0).to(device)
-        if not visibility_grid.check_valid_camera_center(cam_center_tensor)[0]:
-            continue
-
-        # Build pose: look straight down (negative Z direction)
-        # In COLMAP convention:
-        #   X-right, Y-down, Z-forward
-        # So to look down, we want:
-        #   forward = [0, 0, -1]  (camera's Z-axis points down)
-        #   right = [1, 0, 0]     (camera's X-axis points right)
-        #   up = [0, -1, 0]       (camera's Y-axis points down -> but in COLMAP, Y is down, so this is correct)
-        #
-        # But note: in c2w matrix, the columns are [right, up, forward]
-        R = np.array([
-            [1,  0,  0],   # right
-            [0, -1,  0],   # up (down in COLMAP)
-            [0,  0, -1]    # forward (down)
-        ])
-
-        pose = np.eye(4)
-        pose[:3, :3] = R
-        pose[:3, 3] = cam_pos
-
-        try:
-            cur_cam = MiniCam(pose.astype(np.float32), width, height, fovy, fovx)
-            novel_poses.append(pose)
-            novel_cams.append(cur_cam)
-        except Exception as e:
-            continue
-
-    print(f"[ INFO ] Generated {len(novel_cams)} downward-looking cameras.")
-    if len(novel_cams) == 0:
-        print("[ WARN ] No cameras passed visibility check. Try reducing offset_from_center_z or increasing n_frames.")
-    return novel_poses, novel_cams
-
-def generate_cameras_on_ellipse_looking_at(
-    train_cams,
-    target_point,
-    n_frames=12,
-    height_offset=0.3,
-    scale=1.0,
-    width=512,
-    height=512,
-    fovy_deg=60,
-    fovx_deg=None,
-):
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
         vec2 = safe_normalize(-lookdir)
         vec1 = safe_normalize(up)
@@ -1332,89 +1154,257 @@ def generate_cameras_on_ellipse_looking_at(
         vec1 = safe_normalize(np.cross(vec2, vec0))
         m = np.stack([vec0, vec1, vec2, position], axis=1)
         return m
+    
+    def get_point_to_plane_distance(points, plane_normal, plane_point):
+        point_to_plane = points - plane_point
+        distances = np.abs(np.sum(point_to_plane * plane_normal, axis=1))
+        return distances
 
-    # Get scene center and bounds
-    train_centers = np.stack([c.camera_center.cpu().numpy() for c in train_cams], axis=0)
-    scene_center = train_centers.mean(axis=0)
-    x_range = (train_centers[:, 0].max() - train_centers[:, 0].min()) / 2.0
-    y_range = (train_centers[:, 1].max() - train_centers[:, 1].min()) / 2.0
+    def farthest_point_sampling(points, num_samples):
+        if len(points) <= num_samples:
+            return np.arange(len(points))
+        selected_indices = [0]
+        distances = np.linalg.norm(points - points[0], axis=1)
+        for _ in range(num_samples - 1):
+            farthest_idx = np.argmax(distances)
+            selected_indices.append(farthest_idx)
+            new_distances = np.linalg.norm(points - points[farthest_idx], axis=1)
+            distances = np.minimum(distances, new_distances)
+        return np.array(selected_indices)
+    
+    def find_optimal_camera_position(plane_points, plane_normal, visible_points, lookat_point):
+        min_coords = np.min(plane_points, axis=0)
+        max_coords = np.max(plane_points, axis=0)
+        plane_size = np.max(max_coords - min_coords)
+        distance_factor = plane_size / (2 * np.tan(fovx / 2))
+        optimal_distance = distance_factor * 1.5 
+        
+        camera_direction = -plane_normal
+        directions_to_lookat = visible_points - lookat_point
+        directions_to_lookat = directions_to_lookat / (np.linalg.norm(directions_to_lookat, axis=1, keepdims=True) + 1e-6)
+        
+        ideal_direction = camera_direction / (np.linalg.norm(camera_direction) + 1e-6)
+        similarities = np.abs(np.dot(directions_to_lookat, ideal_direction))
+        similarities_thresh = np.max(similarities) * 0.9
+        
+        distances_to_lookat = np.linalg.norm(visible_points - lookat_point, axis=1)
+        distance_scores = np.exp(-np.abs(distances_to_lookat - optimal_distance) / (optimal_distance + 1e-6))
+        
+        combined_scores = similarities + distance_scores
+        high_similarity_mask = similarities > similarities_thresh
+        if not high_similarity_mask.any():
+            return visible_points[np.argmax(combined_scores)]
+            
+        high_similarity_indices = np.nonzero(high_similarity_mask)[0]
+        high_similarity_scores = combined_scores[high_similarity_mask]
+        best_idx = high_similarity_indices[np.argmax(high_similarity_scores)]
+        return visible_points[best_idx]
 
-    # Use circle (not ellipse)
-    radius = scale * (x_range + y_range) / 2.0
-
-    # Circle center (elevated)
-    circle_center = np.array([
-        scene_center[0],
-        scene_center[1],
-        scene_center[2] + height_offset
-    ])
-
-    # >>>>>>>>>> 新增：圆心向 target XY 方向偏移 <<<<<<<<<<
-    bias_factor = 0.2  # 可调参数，建议 0.2~0.5
-    direction_to_target_xy = target_point[:2] - scene_center[:2]
-    dist_to_target_xy = np.linalg.norm(direction_to_target_xy)
-    if dist_to_target_xy > 1e-6:
-        unit_dir = direction_to_target_xy / dist_to_target_xy
-        circle_center[:2] += bias_factor * radius * unit_dir
-
-    # Generate full circle
-    angles = np.linspace(0, 2 * np.pi, n_frames * 2, endpoint=False)
-    full_positions = np.stack([
-        circle_center[0] + radius * np.cos(angles),
-        circle_center[1] + radius * np.sin(angles),
-        np.full(len(angles), circle_center[2])
-    ], axis=1)
-
-    # Direction from circle center to target (in XY plane)
-    target_dir_xy = target_point[:2] - circle_center[:2]
-    if np.linalg.norm(target_dir_xy) < 1e-6:
-        target_dir_xy = np.array([1.0, 0.0])  # default forward
-    else:
-        target_dir_xy = target_dir_xy / np.linalg.norm(target_dir_xy)
-
-    # For each camera, compute its direction from circle center (XY)
-    cam_dirs_xy = full_positions[:, :2] - circle_center[:2]
-    cam_dirs_xy_norm = np.linalg.norm(cam_dirs_xy, axis=1, keepdims=True) + 1e-8
-    cam_dirs_xy = cam_dirs_xy / cam_dirs_xy_norm
-
-    # Keep only points where angle <= 90° (dot >= 0)
-    dot_products = np.sum(cam_dirs_xy * target_dir_xy, axis=1)
-    half_mask = dot_products >= 0
-    half_positions = full_positions[half_mask]
-
-    if len(half_positions) == 0:
-        half_positions = full_positions[:1]
-
-    # Sample up to n_frames
-    if len(half_positions) > n_frames:
-        indices = np.random.choice(len(half_positions), n_frames, replace=False)
-        cam_positions = half_positions[indices]
-    else:
-        cam_positions = half_positions
-
-    # Build poses
+    # --- 1. 准备数据 ---
     fovy = np.deg2rad(fovy_deg)
     fovx = fovy if fovx_deg is None else np.deg2rad(fovx_deg)
-    up = np.array([0, 0, -1])  # COLMAP convention
 
-    novel_poses = []
-    novel_cams = []
+    all_plane_list = []
+    plane_id_list = []
+    plane_normals = {}
 
-    for cam_pos in cam_positions:
-        pose = viewmatrix(cam_pos - target_point, up, cam_pos)
-        homogeneous_row = np.zeros((1, 4))
-        homogeneous_row[0, 3] = 1
-        pose = np.concatenate([pose, homogeneous_row], axis=0)
+    for p_id, p_pts in plane_all_points_dict.items():
+        all_plane_list.append(p_pts)
+        plane_id_list.extend([p_id] * len(p_pts))
+        idx = np.random.choice(len(p_pts), min(len(p_pts), 100), replace=False)
+        pts_for_normal = p_pts[idx]
+        centroid = np.mean(pts_for_normal, axis=0)
+        _, _, vh = np.linalg.svd(pts_for_normal - centroid)
+        plane_normals[p_id] = vh[2, :]
 
+    all_points = np.concatenate(all_plane_list, axis=0)
+    point_to_plane_id = np.array(plane_id_list)
+
+    # --- 2. FPS 采样 ---
+    num_pts_for_fps = 18000 
+    if len(all_points) > num_pts_for_fps:
+        fps_pre_indices = np.random.choice(len(all_points), num_pts_for_fps, replace=False)
+        pts_for_fps = all_points[fps_pre_indices]
+        ids_for_fps = point_to_plane_id[fps_pre_indices]
+    else:
+        pts_for_fps = all_points
+        ids_for_fps = point_to_plane_id
+
+    # 在降采样后的点集上跑 FPS
+    sample_indices = farthest_point_sampling(pts_for_fps, n_samples)
+    sampled_lookat_pts = pts_for_fps[sample_indices]
+    sampled_plane_ids = ids_for_fps[sample_indices]
+
+    # --- 3. 获取相机候选池并添加 Z 轴限制 ---
+    train_cam_centers = torch.stack([cam.camera_center for cam in train_cams], dim=0)
+    x_range = (train_cam_centers[:, 0].max() - train_cam_centers[:, 0].min()) / 2.0
+    y_range = (train_cam_centers[:, 1].max() - train_cam_centers[:, 1].min()) / 2.0
+    
+    if traj_center is None:
+        traj_center_pt = torch.mean(train_cam_centers, dim=0).cpu().numpy()
+    else:
+        traj_center_pt = traj_center.cpu().numpy() if isinstance(traj_center, torch.Tensor) else traj_center
+
+    all_visible_pnts = visibility_grid.get_all_visible_pnts().detach().cpu().numpy()
+    
+    # 1. Z 轴限制 (中心上方 0.35 - 0.5)
+    z_min_limit = traj_center_pt[2] + 0.32
+    z_max_limit = traj_center_pt[2] + 0.44
+    z_valid_mask = (all_visible_pnts[:, 2] >= z_min_limit) & (all_visible_pnts[:, 2] <= z_max_limit)
+    
+    # 2. XY 平面限制 (以 traj_center 为圆心，半径 0.35 的圆)
+    # 计算每个点在 XY 平面到中心的距离
+    dist_xy = np.linalg.norm(all_visible_pnts[:, :2] - traj_center_pt[:2], axis=1)
+    xy_valid_mask = dist_xy <= 0.45
+    
+    # 合并限制
+    final_valid_mask = z_valid_mask & xy_valid_mask
+    
+    # --- 安全回退机制 ---
+    # 如果限制太死导致没有点，我们优先保留 Z 轴限制，并稍微放宽 XY 半径到 1.0m
+    if final_valid_mask.sum() == 0:
+        print(">>> [Warning] No cams in 0.35m radius, relaxing to 1.0m.")
+        xy_valid_mask = dist_xy <= 1.0
+        final_valid_mask = z_valid_mask & xy_valid_mask
+        
+    # 如果还是没有，则只保留 Z 轴限制
+    if final_valid_mask.sum() == 0:
+        final_valid_mask = z_valid_mask
+        
+    valid_novel_cam_centers = all_visible_pnts[final_valid_mask]
+
+    # --- 4. 生成相机 ---
+    lookat_points_final = []
+    novel_cam_centers_final = []
+
+    for i in range(len(sampled_lookat_pts)):
+        target_p = sampled_lookat_pts[i]
+        p_id = sampled_plane_ids[i]
+        normal = plane_normals[p_id]
+        
         try:
-            cam = MiniCam(pose.astype(np.float32), width, height, fovy=fovy, fovx=fovx)
-            novel_poses.append(pose)
-            novel_cams.append(cam)
+            camera_center = find_optimal_camera_position(
+                plane_all_points_dict[p_id], normal, valid_novel_cam_centers, target_p
+            )
+            lookat_points_final.append(target_p)
+            novel_cam_centers_final.append(camera_center)
         except:
             continue
 
-    print(f"[INFO] Generated {len(novel_cams)} cameras on SEMICIRCLE looking at {target_point}")
-    return novel_poses, novel_cams
+    # --- 5. 构造 Pose ---
+    up = np.array([0, 0, -1])
+    if len(novel_cam_centers_final) > 0:
+        new_poses = np.stack([viewmatrix(p - lookat, up, p) for p, lookat in zip(novel_cam_centers_final, lookat_points_final)])
+        homogeneous_row = np.zeros((len(new_poses), 1, 4))
+        homogeneous_row[:, 0, 3] = 1
+        new_poses = np.concatenate([new_poses, homogeneous_row], axis=1)
+    else:
+        new_poses = np.array([])
+
+    cur_cams = []
+    for idx in range(len(new_poses)):
+        c2w = new_poses[idx].astype(np.float32)
+        cur_cam = MiniCam(c2w, width, height, fovy=fovy, fovx=fovx)
+        cur_cams.append(cur_cam)
+
+    return new_poses, cur_cams
+
+def select_views_by_plane_coverage(
+    novel_cams, 
+    plane_all_points_dict, 
+    gaussians, 
+    gs_depths=None,
+    select_num=32, 
+    covisible_rate_high_bound=0.9,
+    none_visible_rate_list=None,
+    min_depth_threshold=0.6
+):
+    """
+    基于平面覆盖率、深度有效性、不可见率以及共视度筛选视角。
+    
+    Args:
+        gs_depths: List[torch.Tensor], 每个元素的 shape 为 [H, W] 或 [1, H, W]
+        min_depth_threshold: 深度中位数阈值，小于此值认为被遮挡或贴墙
+    """
+
+    # 1. 计算每个视角的“平面分” (在视野内的平面格点数)
+    all_plane_pts = np.concatenate(list(plane_all_points_dict.values()), axis=0)
+    all_plane_pts_torch = torch.from_numpy(all_plane_pts).float().cuda()
+    all_plane_pts_homo = torch.cat([all_plane_pts_torch, torch.ones((all_plane_pts_torch.shape[0], 1), device='cuda')], dim=-1)
+
+    view_scores = []
+    print(f">>> Scoring {len(novel_cams)} views by plane coverage & depth depth validity...")
+    
+    for i, cam in enumerate(novel_cams):
+        # --- 新增：深度过滤逻辑 ---
+        # 如果提供了深度图，检查深度分布
+        if gs_depths is not None:
+            depth = gs_depths[i]
+            # 计算有效深度的中位数（避免噪点干扰）
+            median_depth = torch.median(depth).item()
+            
+            # 如果大部分深度都比较小，说明贴墙拍或被物体遮挡，直接给 0 分跳过
+            if median_depth < min_depth_threshold:
+                view_scores.append((i, 0))
+                continue
+
+        # 投影计算覆盖点数
+        p_proj = (all_plane_pts_homo @ cam.full_proj_transform)
+        p_ndc = p_proj[:, :3] / p_proj[:, 3:4]
+        in_fov = (p_ndc[:, 0].abs() < 1.0) & (p_ndc[:, 1].abs() < 1.0) & (p_proj[:, 2] > 0)
+        score = in_fov.sum().item()
+        view_scores.append((i, score))
+
+    # 2. 排序：按平面覆盖分从高到低排列
+    view_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    selected_view_ids = []
+
+    # 3. 贪心选择
+    for view_id, score in view_scores:
+        # 深度不及格或完全没看平面的 score 会是 0
+        if score <= 0: 
+            continue
+            
+        # --- 不可见率过滤 ---
+        if none_visible_rate_list is not None:
+            if none_visible_rate_list[view_id] > 0.55 or none_visible_rate_list[view_id] < 0.1:
+                continue
+        
+        # 检查与已选视角的共视度
+        is_covisible = False
+        for selected_id in selected_view_ids:
+            covisible_ratio = covisibility_check_by_gs(
+                novel_cams[selected_id], novel_cams[view_id], gaussians
+            )
+            
+            if covisible_ratio > covisible_rate_high_bound:
+                is_covisible = True
+                break
+        
+        if not is_covisible:
+            selected_view_ids.append(view_id)
+            
+        if len(selected_view_ids) >= select_num:
+            break
+
+    # 4. 补齐逻辑 (依然遵循 nv_rate 和深度分规则)
+    if len(selected_view_ids) < select_num:
+        print(f"Only found {len(selected_view_ids)} optimal views. Adding remaining by score...")
+        for view_id, score in view_scores:
+            if score <= 0: continue # 深度不及格的依然不能要
+            
+            if view_id not in selected_view_ids:
+                if none_visible_rate_list is not None:
+                    if none_visible_rate_list[view_id] > 0.55:
+                        continue
+                selected_view_ids.append(view_id)
+                
+            if len(selected_view_ids) >= select_num:
+                break
+
+    print(f">>> Final Selection: {len(selected_view_ids)} views (Depth & Coverage verified).")
+    return selected_view_ids
 
 def generate_cameras_from_positions_looking_at(
     cam_positions,
@@ -1432,7 +1422,6 @@ def generate_cameras_from_positions_looking_at(
         novel_cams: List of MiniCam objects
     """
     def viewmatrix(lookdir: np.ndarray, up: np.ndarray, position: np.ndarray) -> np.ndarray:
-        """Construct lookat view matrix (copied from generate_see3d_camera_by_lookat_all_plane)."""
         vec2 = safe_normalize(-lookdir)
         vec1 = safe_normalize(up)
         vec0 = safe_normalize(np.cross(vec1, vec2))

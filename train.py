@@ -6,6 +6,7 @@ import glob
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 import shutil
+import pathlib
 
 def run_command_safe(command):
     print(f"Running command: {command}")
@@ -291,116 +292,127 @@ if __name__ == '__main__':
 
     t1 = time.time()
     
-#     # run MAtCha training
-#     run_command_safe(sfm_command)
-#     run_command_safe(align_charts_command)
+    # run MAtCha training
+    run_command_safe(sfm_command)
+    run_command_safe(align_charts_command)
 
-#     # generate 2D planes + refine depth for input views + init gaussian training
-#     run_command_safe(render_charts_command)
-#     run_command_safe(generate_2Dplane_command)
-#     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=None))
-#     run_command_safe(refine_free_gaussians_command)
-
-#     # copy split.json to free_gaussians_path for eval
-#     cp_cmd_1 = f'cp {args.source_path}/split-{args.config_view_num}views.json {free_gaussians_path}'
-#     run_command_safe(cp_cmd_1)
-
-#     # use dense views as pseudo see3d data
-#     if args.dense_supervision:
-#         print('********* NOTE: use dense views as pseudo see3d data *********')
-        
-#         run_command_safe(pseudo_see3d_command)
-#         run_command_safe(plane_refine_depth_command_2)
-#         print("=======================================================================================================")
-#         print(f'Get  dense views done! ')
-#         print("=======================================================================================================")
-#         mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-dense'
-#         run_command_safe(mv_cmd)
-#         # if args.dense_supervision:
-#         #     source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
-#         #     direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
-            
-#         #     os.makedirs(direct_path, exist_ok=True)  
-
-#         #     for filename in os.listdir(source_plane_root_dir):
-#         #         source_file = os.path.join(source_plane_root_dir, filename)
-#         #         target_file = os.path.join(direct_path, filename)
-
-#         #         if os.path.isfile(source_file):
-#         #             shutil.copy2(source_file, target_file)
-#         #             print(f"Copied and overwritten: {target_file}")
-#         run_command_safe(refine_free_gaussians_command)
-
-# #    ====================  see3d inpainting stage  ================================
-#     # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
-#     run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
-#     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
-#     # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
-#     # run_command_safe(mv_cmd)
-#     if args.dense_supervision:
-#         source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
-#         direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
-        
-#         os.makedirs(direct_path, exist_ok=True)  
-
-#         for filename in os.listdir(source_plane_root_dir):
-#             source_file = os.path.join(source_plane_root_dir, filename)
-#             target_file = os.path.join(direct_path, filename)
-
-#             if os.path.isfile(source_file):
-#                 shutil.copy2(source_file, target_file)
-#                 print(f"Copied and overwritten: {target_file}")
-#     run_command_safe(refine_free_gaussians_command)
-
-#     # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
-#     run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
-#     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
-#     # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
-#     # run_command_safe(mv_cmd)
-#     if args.dense_supervision:
-#         source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
-#         direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
-        
-#         os.makedirs(direct_path, exist_ok=True)  
-
-#         for filename in os.listdir(source_plane_root_dir):
-#             source_file = os.path.join(source_plane_root_dir, filename)
-#             target_file = os.path.join(direct_path, filename)
-
-#             if os.path.isfile(source_file):
-#                 shutil.copy2(source_file, target_file)
-#                 print(f"Copied and overwritten: {target_file}")
-#     run_command_safe(refine_free_gaussians_command)
-
-#     # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
-#     run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
-#     anchor_view_id_json_path = os.path.join(see3d_root_path, 'stage3', 'anchor_view_id.json')
-#     run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=anchor_view_id_json_path, see3d_root_path=see3d_root_path))
-#     # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
-#     # run_command_safe(mv_cmd)
-#     if args.dense_supervision:
-#         source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
-#         direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
-        
-#         os.makedirs(direct_path, exist_ok=True)  
-
-#         for filename in os.listdir(source_plane_root_dir):
-#             source_file = os.path.join(source_plane_root_dir, filename)
-#             target_file = os.path.join(direct_path, filename)
-
-#             if os.path.isfile(source_file):
-#                 shutil.copy2(source_file, target_file)
-#                 print(f"Copied and overwritten: {target_file}")
-#     run_command_safe(refine_free_gaussians_command)
-
-    # see3d inpainting stage 4 + refine depth with 2D planes + continue gaussian training
-    run_command_safe(get_see3d_inpaint_command(4, args.select_inpaint_num))
-    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
-    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s3'
-    # run_command_safe(mv_cmd)
+    # generate 2D planes + refine depth for input views + init gaussian training
+    run_command_safe(render_charts_command)
+    run_command_safe(generate_2Dplane_command)
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=None))
     run_command_safe(refine_free_gaussians_command)
 
-#    ==========================  see3d stage  ================================
+    # copy split.json to free_gaussians_path for eval
+    cp_cmd_1 = f'cp {args.source_path}/split-{args.config_view_num}views.json {free_gaussians_path}'
+    run_command_safe(cp_cmd_1)
+
+    # # use dense views as pseudo see3d data
+    # if args.dense_supervision:
+    #     print('********* NOTE: use dense views as pseudo see3d data *********')
+        
+    #     run_command_safe(pseudo_see3d_command)
+    #     run_command_safe(plane_refine_depth_command_2)
+    #     print("=======================================================================================================")
+    #     print(f'Get  dense views done! ')
+    #     print("=======================================================================================================")
+    #     mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-dense'
+    #     run_command_safe(mv_cmd)
+    #     # if args.dense_supervision:
+    #     #     source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
+    #     #     direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
+            
+    #     #     os.makedirs(direct_path, exist_ok=True)  
+
+    #     #     for filename in os.listdir(source_plane_root_dir):
+    #     #         source_file = os.path.join(source_plane_root_dir, filename)
+    #     #         target_file = os.path.join(direct_path, filename)
+
+    #     #         if os.path.isfile(source_file):
+    #     #             shutil.copy2(source_file, target_file)
+    #     #             print(f"Copied and overwritten: {target_file}")
+    #     run_command_safe(refine_free_gaussians_command)
+
+#    ====================  see3d inpainting stage  ================================
+#    ==============================================================================
+
+    # see3d inpainting stage 1 + refine depth with 2D planes + continue gaussian training
+    ts1b=time.time()
+    run_command_safe(get_see3d_inpaint_command(1, args.select_inpaint_num))
+    ts1e=time.time()
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-ori'
+    # run_command_safe(mv_cmd)
+    if args.dense_supervision:
+        source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
+        direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
+        
+        os.makedirs(direct_path, exist_ok=True)  
+
+        for filename in os.listdir(source_plane_root_dir):
+            source_file = os.path.join(source_plane_root_dir, filename)
+            target_file = os.path.join(direct_path, filename)
+
+            if os.path.isfile(source_file):
+                shutil.copy2(source_file, target_file)
+                print(f"Copied and overwritten: {target_file}")
+    run_command_safe(refine_free_gaussians_command)
+
+    # see3d inpainting stage 2 + refine depth with 2D planes + continue gaussian training
+    ts2b=time.time()
+    run_command_safe(get_see3d_inpaint_command(2, args.select_inpaint_num))
+    ts2e=time.time()
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s1'
+    # run_command_safe(mv_cmd)
+    if args.dense_supervision:
+        source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
+        direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
+        
+        os.makedirs(direct_path, exist_ok=True)  
+
+        for filename in os.listdir(source_plane_root_dir):
+            source_file = os.path.join(source_plane_root_dir, filename)
+            target_file = os.path.join(direct_path, filename)
+
+            if os.path.isfile(source_file):
+                shutil.copy2(source_file, target_file)
+                print(f"Copied and overwritten: {target_file}")
+    run_command_safe(refine_free_gaussians_command)
+
+    # see3d inpainting stage 3 + refine depth with 2D planes + continue gaussian training
+    ts3b=time.time()
+    run_command_safe(get_see3d_inpaint_command(3, args.select_inpaint_num))
+    ts3e=time.time()
+    anchor_view_id_json_path = os.path.join(see3d_root_path, 'stage3', 'anchor_view_id.json')
+    run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
+    # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s2'
+    # run_command_safe(mv_cmd)
+    if args.dense_supervision:
+        source_plane_root_dir = os.path.join(mast3r_scene_path, 'see3d_render', 'stage0', 'select-gs-inpainted')
+        direct_path = os.path.join(mast3r_scene_path, 'see3d_render', 'inpainted_images')
+        
+        os.makedirs(direct_path, exist_ok=True)  
+
+        for filename in os.listdir(source_plane_root_dir):
+            source_file = os.path.join(source_plane_root_dir, filename)
+            target_file = os.path.join(direct_path, filename)
+
+            if os.path.isfile(source_file):
+                shutil.copy2(source_file, target_file)
+                print(f"Copied and overwritten: {target_file}")
+    run_command_safe(refine_free_gaussians_command)
+
+    # # see3d inpainting stage 4 + refine depth with 2D planes + continue gaussian training
+    # ts4b=time.time()
+    # run_command_safe(get_see3d_inpaint_command(4, args.select_inpaint_num))
+    # ts4e=time.time()
+    # run_command_safe(get_plane_refine_depth_command(anchor_view_id_json_path=None, see3d_root_path=see3d_root_path))
+    # # mv_cmd = f'mv {free_gaussians_path}/point_cloud {free_gaussians_path}/point_cloud-s3'
+    # # run_command_safe(mv_cmd)
+    # run_command_safe(refine_free_gaussians_command)
+
+   ##==========================  see3d stage  ================================
+   ##=========================================================================
 
 
     # if not args.is_forward_facing_scene:                # not forward facing scene, use stage 2 and 3
@@ -471,4 +483,6 @@ if __name__ == '__main__':
     # run_command_safe(vis_global_3Dplane_by_mesh_command)
 
     t2 = time.time()
+    # tsee3d = (ts1e - ts1b) + (ts2e - ts2b) + (ts3e - ts3b) + (ts4e - ts4b)
+    # print(f"See3d time 40 views: {tsee3d} seconds")
     print(f"Total running time: {t2 - t1} seconds")

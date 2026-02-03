@@ -159,7 +159,15 @@ class PlaneExcavator:
         normal_clusters = self._normals_cluster(normals)
 
         # Generate masks
+        rng_backup = torch.random.get_rng_state()
+        if torch.cuda.is_available():
+            cuda_backup = torch.cuda.get_rng_state()
+        torch.manual_seed(42)  
         normalized_prompts = torch.rand(self.num_sam_prompts, 2, device=self.device) * 2 - 1
+
+        torch.random.set_rng_state(rng_backup)
+        if torch.cuda.is_available():
+            torch.cuda.set_rng_state(cuda_backup)
         sam_outputs = infer_masks(self.sam_model, img, keypoints=normalized_prompts, device=self.device, num_pts_active=0)['masks']
         masks = sam_outputs['masks'].cpu().numpy()
         masks = sorted(masks, key=lambda x: np.sum(x))

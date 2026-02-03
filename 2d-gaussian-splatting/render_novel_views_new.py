@@ -13,7 +13,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams, get_combi
 
 from utils.render_utils import save_img_f32, save_img_u8
 from tqdm import tqdm
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import trimesh
 
 from utils.general_utils import safe_state
@@ -29,9 +29,9 @@ from guidance.cam_utils import (
     generate_see3d_camera_by_view_angle,
     generate_see3d_camera_by_lookat_none_vis_plane,
     generate_see3d_camera_by_lookat_all_plane,
-    generate_see3d_camera_by_ceiling_edge,
-    generate_cameras_on_ellipse_looking_at,
-    generate_cameras_from_positions_looking_at
+    generate_cameras_from_positions_looking_at,
+    generate_see3d_camera_by_fps_planes,
+    select_views_by_plane_coverage
 )
 
 from matcha.dm_scene.charts import depths_to_points_parallel
@@ -77,12 +77,6 @@ if __name__ == "__main__":
             image_name = f'{viewpoint.image_name}.{postfix}'
             shutil.copy(os.path.join(src_image_root_path, image_name), os.path.join(ref_views_save_root_path, image_name))
 
-    ### get image size same as input views
-    # src_image_root = os.path.join(args.source_path, 'images')
-    # first_img_path = os.path.join(src_image_root, os.listdir(src_image_root)[0])
-    # with Image.open(first_img_path) as im:
-    #     REAL_W, REAL_H = im.size  
-
     REAL_H=512
     REAL_W=512
     # load see3d cameras
@@ -100,7 +94,7 @@ if __name__ == "__main__":
     os.makedirs(novel_views_save_root_path, exist_ok=True)
 
     # render train views
-    alpha_vis_thresh = 0.99
+    alpha_vis_thresh = 0.95
     train_save_root_path = os.path.join(novel_views_save_root_path, 'render-train-views')
     os.makedirs(train_save_root_path, exist_ok=True)
     train_view_depths = []
@@ -137,83 +131,63 @@ if __name__ == "__main__":
     novel_poses, novel_cams = [], []
     plane_root_path = os.path.join(args.source_path, 'plane-refine-depths')
     vis_plane_pnts_path = os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_vis_global_3Dplane_points')
-    used_top_k = 5
-    if args.see3d_stage == 3:
-        used_top_k = 10
+    used_top_k = 8
     plane_all_points_dict = get_all_global_3Dpnts(args.source_path, plane_root_path, see3d_render_path, vis_plane_pnts_path, top_k=used_top_k)
-     
-    if args.see3d_stage == 1:
-        used_fov_deg = 80
-        only_warp_input_views = False
-        select_view_method = 'covisibility_rate'
 
-        # look at scene center
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_lookat_object_centric(train_viewpoints, visibility_grid, n_frames=40, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
+    ### filter global target points within room AABB
+    if len(plane_all_points_dict) > 0:
+        all_plane_pts_np = np.concatenate(list(plane_all_points_dict.values()), axis=0)
+        all_plane_pts_torch = torch.from_numpy(all_plane_pts_np).float().cuda()
+        room_min = all_plane_pts_torch.min(dim=0).values - 0.2
+        room_max = all_plane_pts_torch.max(dim=0).values + 0.2
+        
+        vg = visibility_grid
+        nx, ny, nz = vg.resolution, vg.resolution, vg.resolution
+        
+        x_indices = torch.arange(nx, device=vg.device)
+        y_indices = torch.arange(ny, device=vg.device)
+        z_indices = torch.arange(nz, device=vg.device)
+        X, Y, Z = torch.meshgrid(x_indices, y_indices, z_indices, indexing='ij')
+        
+        grid_centers = torch.stack([
+            vg.bbox_min[0] + (X + 0.5) * vg.grid_size[0],
+            vg.bbox_min[1] + (Y + 0.5) * vg.grid_size[1], 
+            vg.bbox_min[2] + (Z + 0.5) * vg.grid_size[2]
+        ], dim=-1)
+
+        global_target_mask = (vg.visibility_grid < 0.5) & \
+                             (grid_centers[..., 0] >= room_min[0]) & (grid_centers[..., 0] <= room_max[0]) & \
+                             (grid_centers[..., 1] >= room_min[1]) & (grid_centers[..., 1] <= room_max[1]) & \
+                             (grid_centers[..., 2] >= room_min[2]) & (grid_centers[..., 2] <= room_max[2])
+        
+        global_target_pnts = grid_centers[global_target_mask]
+        print(f">>> [Setup] Extracted {global_target_pnts.shape[0]} valid target voxels within room bounds.")
+    else:
+        global_target_pnts = None
+        print(">>> [Setup] Warning: No planes found, global_target_pnts is empty.")
+
+
+    used_fov_deg = 80
+    only_warp_input_views = False
+    select_view_method = 'depth_quality'
+    if args.see3d_stage == 1:
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_fps_planes(train_viewpoints, visibility_grid, plane_all_points_dict, n_samples=80, traj_center=None, width=512, height=512, fovy_deg=used_fov_deg, fovx_deg=None)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 
-        # look at scene around
-        novel_poses_2, novel_cams_2 = generate_see3d_camera_by_lookat(input_viewpoints, visibility_grid, gs_input_view_depths.squeeze(1), gs_input_view_points, n_frames=40, width=REAL_W, height=REAL_H, fovy_deg=used_fov_deg)
-        novel_poses.extend(novel_poses_2)
-        novel_cams.extend(novel_cams_2)
-
     elif args.see3d_stage == 2:
-        used_fov_deg = 80
-        only_warp_input_views = False
-        select_view_method = 'covisibility_rate'
-
-        # look around in input views position
-        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_view_angle(input_viewpoints, visibility_grid, fovy_deg=used_fov_deg, n_frames=60,width=REAL_W, height=REAL_H)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_fps_planes(train_viewpoints, visibility_grid, plane_all_points_dict, n_samples=80, traj_center=None, width=512, height=512, fovy_deg=used_fov_deg, fovx_deg=None)
         novel_poses.extend(novel_poses_1)
         novel_cams.extend(novel_cams_1)
 
     elif args.see3d_stage == 3:
-        used_fov_deg = 100
-        only_warp_input_views = True
-        select_view_method = 'none_visible_rate'
-        
-
-    elif args.see3d_stage == 4:
-        only_warp_input_views = False
-        select_view_method = 'covisibility_rate'
-        target_point = np.array([0.21, 1.25, -1.0]) 
-        novel_poses_plane, novel_cams_plane = generate_cameras_on_ellipse_looking_at(
-            train_cams=train_viewpoints,
-            target_point=target_point,
-            n_frames=6,
-            height_offset=0.3,
-            scale=1.0,
-            width=512,
-            height=512,
-            fovy_deg=60
-        )
-        novel_poses.extend(novel_poses_plane)
-        novel_cams.extend(novel_cams_plane)
-
-        # cam_positions = np.array([
-        #     [-0.1, -0.086, 1.32],
-        #     [0.26, 0.18, 0.88],
-        #     [ -0.9531, 0.9645, 0.6753],
-        # ])
-
-        # novel_poses_direct, novel_cams_direct = generate_cameras_from_positions_looking_at(
-        #     cam_positions=cam_positions,
-        #     target_point=target_point,
-        #     width=512,
-        #     height=512,
-        #     fovy_deg=60
-        # )
-        # novel_poses.extend(novel_poses_direct)
-        # novel_cams.extend(novel_cams_direct)
+        novel_poses_1, novel_cams_1 = generate_see3d_camera_by_fps_planes(train_viewpoints, visibility_grid, plane_all_points_dict, n_samples=80, traj_center=None, width=512, height=512, fovy_deg=used_fov_deg, fovx_deg=None)
+        novel_poses.extend(novel_poses_1)
+        novel_cams.extend(novel_cams_1)
 
     else:
         raise ValueError(f'Invalid see3d_stage: {args.see3d_stage}')
-    
-    if args.see3d_stage != 4 :
-        novel_poses_3, novel_cams_3 = generate_see3d_camera_by_lookat_all_plane(train_viewpoints, visibility_grid, plane_all_points_dict, width=REAL_W, height=REAL_H,fovy_deg=used_fov_deg)
-        novel_poses.extend(novel_poses_3)
-        novel_cams.extend(novel_cams_3)
-
+      
     # render gs
     gs_output_dir = os.path.join(novel_views_save_root_path, 'raw-gs')
     os.makedirs(gs_output_dir, exist_ok=True)
@@ -235,6 +209,7 @@ if __name__ == "__main__":
         save_img_f32(depth[0].detach().cpu().numpy(), os.path.join(gs_output_dir, f'depth_frame{idx:06d}.tiff'))
         # save .npy
         np.save(os.path.join(gs_output_dir, f'alpha_{idx:06d}.npy'), alpha[0].detach().cpu().numpy())
+        
         alpha_vis_mask = alpha[0].detach().cpu().numpy() > alpha_vis_thresh
         alpha_list.append(alpha_vis_mask)
 
@@ -288,10 +263,20 @@ if __name__ == "__main__":
         print(f'Render visibility map done!')
 
     max_none_visible_thresh = 0.6
-    if select_view_method == 'none_visible_rate': ## stage 3
-        need_inpaint_views = [i for i in range(len(novel_cams)) if none_visible_rate_list[i] < max_none_visible_thresh]         # delete views with large none visible regions
-    elif select_view_method == 'covisibility_rate': ## stage 1, 2
-        need_inpaint_views = select_need_inpaint_views(novel_cams, none_visible_rate_list, gaussians, int(args.select_inpaint_num), none_visible_rate_high_bound=max_none_visible_thresh, covisible_rate_high_bound=0.9)
+    all_data_dir = os.path.join(novel_views_save_root_path, 'all-data')
+    os.makedirs(all_data_dir, exist_ok=True)
+
+    if select_view_method == 'depth_quality':
+        need_inpaint_views = select_views_by_plane_coverage(
+            novel_cams, 
+            plane_all_points_dict, 
+            gaussians, 
+            select_num=32, 
+            gs_depths=gs_depths,
+            covisible_rate_high_bound=0.9,
+            none_visible_rate_list=none_visible_rate_list
+        )
+                
     else:
         raise ValueError(f'Invalid select_view_method: {select_view_method}')
 
@@ -338,37 +323,103 @@ if __name__ == "__main__":
         shutil.copy(os.path.join(gs_output_dir, f'warp_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'warp_frame{idx:06d}.png'))
         shutil.copy(os.path.join(gs_output_dir, f'mask_frame{ori_id:06d}.png'), os.path.join(select_gs_output_dir, f'mask_frame{idx:06d}.png'))
 
+
+    # =========================================================================
+    # 针对 Replica/ScanNet++ 优化的可见性矩阵预计算
+    # =========================================================================
+    
+    print(">>> Pre-calculating Masked Visibility Matrix for Active Vision...")
+
+    if len(plane_all_points_dict) > 0:
+        num_pnts = global_target_pnts.shape[0]
+        
+        print(f"Total target voxels to fill: {num_pnts}")
+
+        # 3. 计算可见性矩阵 (基于你筛选出的 need_inpaint_views)
+        num_candidates = len(need_inpaint_views)
+        if num_pnts > 0 and num_candidates > 0:
+            # 使用 uint8 节省存储空间
+            vis_matrix = torch.zeros((num_candidates, num_pnts), dtype=torch.uint8, device='cuda')
+            target_pnts_homo = torch.cat([global_target_pnts, torch.ones((num_pnts, 1), device='cuda')], dim=-1)
+
+            for i, ori_idx in enumerate(need_inpaint_views):
+                cam = novel_cams[ori_idx]
+                depth_map = gs_depths[ori_idx] # [H, W] Tensor
+
+                # 投影到相机坐标系
+                p_cam = (target_pnts_homo @ cam.world_view_transform) 
+                z_vals = p_cam[:, 2]
+
+                # 投影到像素坐标 (NDC)
+                p_proj = (target_pnts_homo @ cam.full_proj_transform)
+                p_ndc = p_proj[:, :3] / p_proj[:, 3:4]
+
+                # 筛选在 FOV 内且深度为正的点
+                in_fov = (p_ndc[:, 0].abs() < 1.0) & (p_ndc[:, 1].abs() < 1.0) & (z_vals > 0.05)
+                valid_indices = torch.where(in_fov)[0]
+
+                if len(valid_indices) > 0:
+                    x_pix = ((p_ndc[valid_indices, 0] + 1.0) * cam.image_width / 2.0).long()
+                    y_pix = ((p_ndc[valid_indices, 1] + 1.0) * cam.image_height / 2.0).long()
+                    
+                    x_pix = torch.clamp(x_pix, 0, cam.image_width - 1)
+                    y_pix = torch.clamp(y_pix, 0, cam.image_height - 1)
+
+                    # 遮挡剔除：对比点深度与 GS 渲染深度
+                    # Replica/ScanNet++ 场景比较紧凑，0.03m 的 epsilon 较合适
+                    rendered_depth = depth_map[y_pix, x_pix]
+                    visible_in_view = (z_vals[valid_indices] <= rendered_depth + 0.03)
+                    
+                    # 填充矩阵
+                    vis_matrix[i, valid_indices[visible_in_view]] = 1
+
+            # 4. 导出结果，供第二个脚本使用
+            matrix_save_path = os.path.join(novel_views_save_root_path, 'candidate_vis_matrix.npy')
+            np.save(matrix_save_path, vis_matrix.cpu().numpy())
+            
+            
+            print(f"✅ Matrix {vis_matrix.shape} and PLY saved to {novel_views_save_root_path}")
+        else:
+            print("⚠️ No target points within room bounds. Matrix not saved.")
+    else:
+        print("⚠️ Plane dictionary is empty. Skipping spatial filtering.")
+
     # save need inpaint views cameras
     save_cameras['n_views'] = len(need_inpaint_views_cams)
     np.savez(os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_see3d_cameras.npz'), **save_cameras)
 
-    # save filtered cameras 
-    filtered_indices = [i for i in range(len(novel_cams)) if i not in need_inpaint_views]
-    filtered_cams = [novel_cams[i] for i in filtered_indices]
-    filtered_none_visible_rates = [none_visible_rate_list[i] for i in filtered_indices]
+    # save all cameras 
+    all_cameras = {}
+    all_cameras['train_views'] = len(train_viewpoints)
+    all_cameras['n_views'] = len(novel_cams)
 
-    filtered_cameras = {}
-    filtered_cameras['train_views'] = len(train_viewpoints)
-    for idx, (cam, none_vis_rate) in enumerate(zip(filtered_cams, filtered_none_visible_rates)):
-        filtered_cameras[f'R_{idx:06d}'] = cam.R
-        filtered_cameras[f'T_{idx:06d}'] = cam.T
-        filtered_cameras[f'FoVx_{idx:06d}'] = cam.FoVx
-        filtered_cameras[f'FoVy_{idx:06d}'] = cam.FoVy
-        filtered_cameras[f'image_width_{idx:06d}'] = cam.image_width
-        filtered_cameras[f'image_height_{idx:06d}'] = cam.image_height
-        filtered_cameras[f'none_visible_rate_{idx:06d}'] = none_vis_rate
+    for idx, (cam, none_vis_rate) in enumerate(zip(novel_cams, none_visible_rate_list)):
+        all_cameras[f'R_{idx:06d}'] = cam.R
+        all_cameras[f'T_{idx:06d}'] = cam.T
+        all_cameras[f'FoVx_{idx:06d}'] = cam.FoVx
+        all_cameras[f'FoVy_{idx:06d}'] = cam.FoVy
+        all_cameras[f'image_width_{idx:06d}'] = cam.image_width
+        all_cameras[f'image_height_{idx:06d}'] = cam.image_height
+        all_cameras[f'none_visible_rate_{idx:06d}'] = none_vis_rate
 
-    filtered_cameras['n_views'] = len(filtered_cams)
-    filtered_cam_path = os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_filtered_cameras.npz')
-    np.savez(filtered_cam_path, **filtered_cameras)
-    filtered_rgb_dir = os.path.join(novel_views_save_root_path, 'filtered-rgb')
-    os.makedirs(filtered_rgb_dir, exist_ok=True)
-    for idx, ori_id in enumerate(filtered_indices):
-        src_path = os.path.join(gs_output_dir, f'ori_warp_frame{ori_id:06d}.png')
-        dst_path = os.path.join(filtered_rgb_dir, f'filtered_rgb_{idx:06d}.png')
-        if os.path.exists(src_path):
-            shutil.copy(src_path, dst_path)
-    print(f'Saved filtered cameras (with none_visible_rate) to {filtered_cam_path}')
+    all_cam_path = os.path.join(novel_views_save_root_path, f'stage{args.see3d_stage}_all_cameras.npz')
+    np.savez(all_cam_path, **all_cameras)
 
+    for idx in range(len(novel_cams)):
+        src_rgb_path = os.path.join(gs_output_dir, f'ori_warp_frame{idx:06d}.png')
+        dst_rgb_path = os.path.join(all_data_dir, f'all_rgb_{idx:06d}.png')
+        if os.path.exists(src_rgb_path):
+            shutil.copy(src_rgb_path, dst_rgb_path)
+        
+        src_mask_path = os.path.join(gs_output_dir, f'mask_frame{idx:06d}.png')
+        dst_mask_path = os.path.join(all_data_dir, f'all_mask_{idx:06d}.png')
+        if os.path.exists(src_mask_path):
+            shutil.copy(src_mask_path, dst_mask_path)
+
+    print(f'Saved all generated cameras (in original order) to {all_cam_path}')
+    print(f'Saved all RGB and mask files to {all_data_dir}')
+
+
+    print("#######################################################################")
     print(f'See3D stage {args.see3d_stage} save done!')
-
+    print("#######################################################################")

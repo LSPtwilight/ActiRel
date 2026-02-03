@@ -6,17 +6,17 @@ export no_proxy="localhost,127.0.0.1"
 
 failed_scans=""
 
-for i in 2 ; do
+for i in 4 5 6 7 8 ; do
     timestamp=$(date '+%Y-%m-%d-%H-%M-%S')
     echo "Training scan$i"
     
     if ! python train.py \
             -s "data/test-replica/scan$i/" \
-            -o "output/test-replica/scan2_base3/" \
+            -o "output/test-replica/scan${i}_${timestamp}/" \
             --sfm_config posed \
             --use_view_config \
             --config_view_num 5 \
-            --select_inpaint_num 10 \
+            --select_inpaint_num 12 \
             --use_refine_depth \
             --use_downsample_gaussians; then
         failed_scans="$failed_scans $i"

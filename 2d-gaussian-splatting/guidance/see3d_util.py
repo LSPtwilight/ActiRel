@@ -1,19 +1,97 @@
 import os
 import numpy as np
 import torch
+import sys
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from glob import glob
-from transformers import CLIPTextModel, CLIPTokenizer
-
+import re
+import shutil
+from transformers import CLIPTextModel, CLIPTokenizer, CLIPModel, CLIPProcessor
 from See3D_modules.mv_diffusion import mvdream_diffusion_model
 from See3D_modules.mv_diffusion_SR import mvdream_diffusion_model as mvdream_diffusion_model_SR
 from argparse import ArgumentParser
 import matplotlib.pyplot as plt
 import gc
-
 import time
+import json
+from skimage.metrics import structural_similarity as ssim
+import lpips
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+loss_fn = lpips.LPIPS(net='alex', spatial=False).cuda()
+
+def compute_stability_score(frame_idx, output_dirs, lpips_model):
+
+    imgs_pil = []
+    imgs_tensors = []
+    
+    for d in output_dirs:
+    
+        img_path = os.path.join(d, f"SR_predict_warp_frame{frame_idx:06d}.png")
+        if not os.path.exists(img_path):
+            img_path = os.path.join(d, f"predict_warp_frame{frame_idx:06d}.png")
+        
+        if not os.path.exists(img_path):
+            continue
+        
+        img = Image.open(img_path).convert('RGB')
+        imgs_pil.append(np.array(img))
+        
+        t = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
+        imgs_tensors.append(t.unsqueeze(0).cuda() * 2.0 - 1.0)
+
+    if len(imgs_tensors) < 2:
+        return None
+
+    lpips_dists = []
+    ssim_scores = []
+
+    for i in range(len(imgs_tensors)):
+        for j in range(i + 1, len(imgs_tensors)):
+            # A. 计算 LPIPS
+            with torch.no_grad():
+                dist = lpips_model(imgs_tensors[i], imgs_tensors[j])
+                lpips_dists.append(dist.item())
+            
+            s_val = ssim(imgs_pil[i], imgs_pil[j], channel_axis=2, data_range=255)
+            ssim_scores.append(s_val)
+
+    avg_lpips = float(np.mean(lpips_dists))
+    avg_ssim = float(np.mean(ssim_scores))
+
+    lpips_perceptual_score = np.exp(-avg_lpips * 6.5) 
+    
+    stability_score = 0.6 * lpips_perceptual_score + 0.4 * avg_ssim
+
+    return {
+        "avg_lpips": avg_lpips,
+        "avg_ssim": avg_ssim,
+        "stability_score": float(stability_score)
+    }
+
+def compute_clip_fidelity(img_path, ref_features, clip_model, clip_processor):
+
+    if not os.path.exists(img_path):
+        return 0.0
+        
+    img = Image.open(img_path).convert('RGB')
+    inputs = clip_processor(images=img, return_tensors="pt").to(device)
+    
+    with torch.no_grad():
+        # 提取当前生成图的特征
+        gen_feat = clip_model.get_image_features(**inputs)
+        gen_feat /= gen_feat.norm(p=2, dim=-1, keepdim=True)
+        
+        # 计算与所有参考图的余弦相似度，取最大值
+        similarities = torch.matmul(gen_feat, ref_features.T) 
+        score = similarities.max().item()
+        
+    return float(score)
+
 
 class See3D(nn.Module):
     def __init__(
@@ -274,65 +352,178 @@ class See3D(nn.Module):
 
             print(f'end SR inpainting, result saved in {output_root_dir}')
         
-        
 if __name__ == "__main__":
-
     parser = ArgumentParser()
-    parser.add_argument('--ref_imgs_dir', type=str)
-    parser.add_argument('--warp_root_dir', type=str)
-    parser.add_argument('--output_root_dir', type=str)
-    parser.add_argument('--use_SR', action='store_true', help='Use super resolution for inpainting')
+    parser.add_argument('--ref_imgs_dir', type=str, required=True)
+    parser.add_argument('--warp_root_dir', type=str, required=True) # stageX/select-gs
+    parser.add_argument('--output_root_dir', type=str, required=True)
+    parser.add_argument('--use_SR', action='store_true')
+    parser.add_argument('--see3d_stage', type=int, default=1) 
     args = parser.parse_args()
 
+    # --- 1. Init Models and Features ---
+    print("Initializing Models...")
     source_imgs_dir = args.ref_imgs_dir
     warp_root_dir = args.warp_root_dir
     output_root_dir = args.output_root_dir
+    output_dirs = [output_root_dir, output_root_dir + "_s1", output_root_dir + "_s2"]
+    seeds = [12345, 23456, 34567]
 
+    ref_files = sorted([f for f in glob(os.path.join(source_imgs_dir, "*")) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))])
+    ref_features_list = []
+    for f in ref_files:
+        with torch.no_grad():
+            img = Image.open(f).convert('RGB')
+            it = clip_processor(images=img, return_tensors="pt").to(device)
+            feat = clip_model.get_image_features(**it)
+            ref_features_list.append(feat / feat.norm(p=2, dim=-1, keepdim=True))
+    ref_features = torch.cat(ref_features_list, dim=0)
+
+    # --- 2. Multi-Seed Inference ---
     t1 = time.time()
+    for seed, out_dir in zip(seeds, output_dirs):
+        print(f"\n>>> Running Inference | Seed: {seed}")
+        see3d = See3D(device='cuda', use_SR=args.use_SR, seed=seed)
+        see3d.inpainting(source_imgs_dir, warp_root_dir, out_dir, args.use_SR)
+        del see3d; gc.collect(); torch.cuda.empty_cache()
 
-    see3d = See3D(device='cuda', use_SR=args.use_SR)
-    see3d.inpainting(source_imgs_dir=source_imgs_dir, warp_root_dir=warp_root_dir, output_root_dir=output_root_dir, super_resolution=args.use_SR)
-
-    # save cat img
-    cat_save_root_path = os.path.join(os.path.dirname(output_root_dir), 'cat_img')
-    os.makedirs(cat_save_root_path, exist_ok=True)
-    inpaint_img_list = os.listdir(output_root_dir)
-    inpaint_img_list = [img for img in inpaint_img_list if '.png' in img]
-    img_num = len(inpaint_img_list)
-    none_visible_rate_list = []
-    for idx in range(img_num):
-        gs_render_img_path = os.path.join(warp_root_dir, f'warp_frame{idx:06d}.png')
-        mask_img_path = os.path.join(warp_root_dir, f'mask_frame{idx:06d}.png')
-        inpaint_img_path = os.path.join(output_root_dir, f'predict_warp_frame{idx:06d}.png')
-
-        mask_img = Image.open(mask_img_path)
-        mask_img = np.array(mask_img) / 255
-        total_pixels = mask_img.shape[0] * mask_img.shape[1]
-        mask_pixels = np.sum(mask_img)
-        none_visible_rate = 1 - mask_pixels / total_pixels
-        none_visible_rate_list.append(none_visible_rate)
-
-        gs_render_img = Image.open(gs_render_img_path)
-        inpaint_img = Image.open(inpaint_img_path)
-
-        padding = 10
-        cat_img = Image.new('RGB', (gs_render_img.width + inpaint_img.width + padding, gs_render_img.height))
-        cat_img.paste(gs_render_img, (0, 0))
-        cat_img.paste(inpaint_img, (gs_render_img.width + padding, 0))
-
-        cat_img.save(os.path.join(cat_save_root_path, f'{idx:06d}-{none_visible_rate:.2f}.png'))
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(none_visible_rate_list, label='None Visible Rate')
-    plt.xlabel('Frame Index')
-    plt.ylabel('None Visible Rate')
-    plt.title('None Visible Rate of GS Render and PCD Render')
-    plt.legend()
-    plt.savefig(os.path.join(cat_save_root_path, 'none_visible_rate.png'))
-    plt.close()
-
-    print(f'cat img saved in {cat_save_root_path}')
-
-    t2 = time.time()
-    print(f'Time cost: {t2 - t1:.2f}s')
+    # --- 3. Active Vision Greedy Selection ---
+    print("\n>>> Evaluating views with Active Vision Greedy Selection...")
+    stage_dir = os.path.dirname(output_root_dir)
+    matrix_path = os.path.join(stage_dir, "candidate_vis_matrix.npy")
     
+    candidate_pool = []
+    warp_files = glob(os.path.join(output_root_dir, "predict_warp_frame*.png"))
+    # Ensure indices are sorted to match visibility matrix rows
+    frame_indices = sorted({int(re.search(r'frame(\d+)', os.path.basename(f)).group(1)) for f in warp_files})
+    
+    for idx in frame_indices:
+        stab_res = compute_stability_score(idx, output_dirs, loss_fn)
+        if not stab_res: continue
+        
+        img_prefix = "SR_predict_" if args.use_SR else "predict_"
+        seed_clips = [compute_clip_fidelity(os.path.join(d, f"{img_prefix}warp_frame{idx:06d}.png"), ref_features, clip_model, clip_processor) for d in output_dirs]
+        
+        best_seed_idx = int(np.argmax(seed_clips))
+        quality_score = 0.5 * stab_res["stability_score"] + 0.5 * max(seed_clips)
+        candidate_pool.append({"idx": idx, "quality_score": quality_score, "seed_idx": best_seed_idx})
+
+    vis_matrix = np.load(matrix_path) if os.path.exists(matrix_path) else None
+    final_selection = []
+
+    if vis_matrix is not None:
+        num_candidates, num_pts = vis_matrix.shape
+        coverage_counts = np.zeros(num_pts, dtype=np.int32)
+        selected_p_indices = []
+
+        for _ in range(min(12, len(candidate_pool))):
+            best_score = -1e9
+            best_p_idx = -1
+
+            for p_idx, cand in enumerate(candidate_pool):
+                if p_idx in selected_p_indices: continue
+                
+                view_vis = vis_matrix[p_idx]
+                discovery_gain = np.sum((coverage_counts == 0) & (view_vis == 1))
+                reconstruction_gain = np.sum((coverage_counts == 1) & (view_vis == 1))
+                
+                if args.see3d_stage <= 3:
+                    max_iou_with_selected = 0
+                    if len(selected_p_indices) > 0:
+                        for prev_idx in selected_p_indices:
+                            prev_vis = vis_matrix[prev_idx]
+                            inter = np.logical_and(view_vis, prev_vis).sum()
+                            union = np.logical_or(view_vis, prev_vis).sum()
+                            iou = inter / union if union > 0 else 0
+                            max_iou_with_selected = max(max_iou_with_selected, iou)
+
+
+                    spatial_penalty = 1.0
+                    if max_iou_with_selected > 0.4:
+                        spatial_penalty = 0.1 # 严重打压
+                    
+                    geom_score = (1.0 * discovery_gain) + (1.5 * reconstruction_gain)
+                    norm_geom = geom_score / 8000.0
+                    combined = (0.5 * cand['quality_score'] + 0.5 * norm_geom) * spatial_penalty
+                else:
+                    # Exploitation mode: Focus on multi-view pairs
+                    if cand['quality_score'] < 0.45:
+                        combined = -1e9
+                    else:
+                        geom_score = (0.5 * discovery_gain) + (5.0 * reconstruction_gain)
+                        norm_geom = geom_score / 2000.0
+                        combined = 0.5 * cand['quality_score'] + 0.5 * norm_geom
+
+                if combined > best_score:
+                    best_score = combined
+                    best_p_idx = p_idx
+            
+            if best_p_idx != -1:
+                selected_p_indices.append(best_p_idx)
+                coverage_counts += vis_matrix[best_p_idx]
+                final_selection.append({
+                    "idx": candidate_pool[best_p_idx]['idx'], 
+                    "score": best_score, 
+                    "seed_idx": candidate_pool[best_p_idx]['seed_idx']
+                })
+        final_selection.sort(key=lambda x: x['idx'])
+    else:
+        # Fallback to quality-only
+        candidate_pool.sort(key=lambda x: x['quality_score'], reverse=True)
+        final_selection = sorted(candidate_pool[:10], key=lambda x: x['idx'])
+
+    # --- 4. Synchronization and File Ops ---
+    print(f"\n>>> Synchronizing {len(final_selection)} selected views...")
+    inpaint_target_dir = os.path.join(stage_dir, "select-gs-inpainted")
+    cur_npz_path = os.path.join(stage_dir, f"stage{args.see3d_stage}_see3d_cameras.npz")
+    
+    original_npz = dict(np.load(cur_npz_path, allow_pickle=True))
+    new_npz = {'train_views': original_npz.get('train_views')}
+
+    tmp_inpaint = os.path.join(stage_dir, "tmp_inpaint")
+    tmp_select_gs = os.path.join(stage_dir, "tmp_select_gs")
+    os.makedirs(tmp_inpaint, exist_ok=True)
+    os.makedirs(tmp_select_gs, exist_ok=True)
+
+    file_templates = ["alpha_{suffix}.npy", "alpha_mask_frame{suffix}.png", "alpha_warp_frame{suffix}.png", 
+                      "depth_frame{suffix}.tiff", "mask_frame{suffix}.png", "ori_warp_frame{suffix}.png", "warp_frame{suffix}.png"]
+
+    for new_idx, item in enumerate(final_selection):
+        old_s, new_s = f"{item['idx']:06d}", f"{new_idx:06d}"
+        in_p = "SR_predict_" if args.use_SR else "predict_"
+        
+        # Move Best Inpaint
+        shutil.copy(os.path.join(output_dirs[item['seed_idx']], f"{in_p}warp_frame{old_s}.png"), 
+                    os.path.join(tmp_inpaint, f"predict_warp_frame{new_s}.png"))
+        
+        # Move Geometry Aux Files
+        for temp in file_templates:
+            src_aux = os.path.join(args.warp_root_dir, temp.format(suffix=old_s))
+            if os.path.exists(src_aux):
+                shutil.copy(src_aux, os.path.join(tmp_select_gs, temp.format(suffix=new_s)))
+
+        # Sync Camera NPZ
+        for key in ['R', 'T', 'FoVx', 'FoVy', 'image_width', 'image_height']:
+            if f"{key}_{old_s}" in original_npz:
+                new_npz[f"{key}_{new_s}"] = original_npz[f"{key}_{old_s}"]
+
+    # --- 5. Atomic Refresh of Directories ---
+    def safe_refresh(target, source):
+        os.makedirs(target, exist_ok=True)
+        # Clear target content first instead of removing the directory
+        for item in os.listdir(target):
+            item_path = os.path.join(target, item)
+            if os.path.isfile(item_path): os.remove(item_path)
+            elif os.path.isdir(item_path): shutil.rmtree(item_path)
+        # Move new files
+        for item in os.listdir(source):
+            shutil.move(os.path.join(source, item), os.path.join(target, item))
+        shutil.rmtree(source)
+
+    safe_refresh(inpaint_target_dir, tmp_inpaint)
+    safe_refresh(args.warp_root_dir, tmp_select_gs)
+
+    new_npz['n_views'] = len(final_selection)
+    np.savez(cur_npz_path, **new_npz)
+
+    print(f"✅ Stage {args.see3d_stage} refinement complete. Results in: {inpaint_target_dir}")

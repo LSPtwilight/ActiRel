@@ -18,7 +18,7 @@ from scene.dataset_readers import load_see3d_cameras
 import gc
 import copy
 import torch
-from random import randint
+from random import randint,seed
 from utils.loss_utils import l1_loss, ssim, l1_loss_with_conf
 from utils.sh_utils import SH2RGB
 from gaussian_renderer import render, network_gui
@@ -308,6 +308,7 @@ def training(
     
     # ===================================================================================
     # Training setup
+    seed(42)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
