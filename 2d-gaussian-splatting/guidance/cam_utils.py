@@ -1138,10 +1138,6 @@ def generate_see3d_camera_by_lookat_object_centric(train_cams, visibility_grid, 
 ################################################################################################
 
 def generate_see3d_camera_by_fps_planes(train_cams, visibility_grid, plane_all_points_dict, n_samples=80, traj_center=None, width=512, height=512, fovy_deg=60, fovx_deg=None):
-    """
-    针对所有平面点进行 FPS 采样，生成 80 个分布均匀的观察视角。
-    限制相机 Z 轴必须在场景中心 Z 值上方 0.35 - 0.5 之间。
-    """
 
     def safe_normalize(v):
         norm = np.linalg.norm(v, axis=-1, keepdims=True)
@@ -1248,14 +1244,14 @@ def generate_see3d_camera_by_fps_planes(train_cams, visibility_grid, plane_all_p
     all_visible_pnts = visibility_grid.get_all_visible_pnts().detach().cpu().numpy()
     
     # 1. Z 轴限制 (中心上方 0.35 - 0.5)
-    z_min_limit = traj_center_pt[2] + 0.32
-    z_max_limit = traj_center_pt[2] + 0.44
+    z_min_limit = traj_center_pt[2] + 0.34
+    z_max_limit = traj_center_pt[2] + 0.42
     z_valid_mask = (all_visible_pnts[:, 2] >= z_min_limit) & (all_visible_pnts[:, 2] <= z_max_limit)
     
     # 2. XY 平面限制 (以 traj_center 为圆心，半径 0.35 的圆)
     # 计算每个点在 XY 平面到中心的距离
     dist_xy = np.linalg.norm(all_visible_pnts[:, :2] - traj_center_pt[:2], axis=1)
-    xy_valid_mask = dist_xy <= 0.45
+    xy_valid_mask = dist_xy <= 0.48
     
     # 合并限制
     final_valid_mask = z_valid_mask & xy_valid_mask
@@ -1319,13 +1315,6 @@ def select_views_by_plane_coverage(
     none_visible_rate_list=None,
     min_depth_threshold=0.6
 ):
-    """
-    基于平面覆盖率、深度有效性、不可见率以及共视度筛选视角。
-    
-    Args:
-        gs_depths: List[torch.Tensor], 每个元素的 shape 为 [H, W] 或 [1, H, W]
-        min_depth_threshold: 深度中位数阈值，小于此值认为被遮挡或贴墙
-    """
 
     # 1. 计算每个视角的“平面分” (在视野内的平面格点数)
     all_plane_pts = np.concatenate(list(plane_all_points_dict.values()), axis=0)

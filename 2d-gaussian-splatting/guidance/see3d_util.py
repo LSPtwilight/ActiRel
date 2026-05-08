@@ -4,11 +4,11 @@ import torch
 import sys
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from glob import glob
 import re
 import shutil
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPModel, CLIPProcessor
+from transformers import CLIPTextModel, CLIPTokenizer, CLIPModel, CLIPProcessor, AutoProcessor, AutoModel
 from See3D_modules.mv_diffusion import mvdream_diffusion_model
 from See3D_modules.mv_diffusion_SR import mvdream_diffusion_model as mvdream_diffusion_model_SR
 from argparse import ArgumentParser
@@ -19,10 +19,16 @@ import json
 from skimage.metrics import structural_similarity as ssim
 import lpips
 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
-clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+#clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+#clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+pick_processor_name = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+pick_model_name = "yuvalkirstain/PickScore_v1"
+pick_processor = AutoProcessor.from_pretrained(pick_processor_name)
+pick_model = AutoModel.from_pretrained(pick_model_name).eval().to(device)
 loss_fn = lpips.LPIPS(net='alex', spatial=False).cuda()
+
 
 def compute_stability_score(frame_idx, output_dirs, lpips_model):
 
@@ -73,25 +79,51 @@ def compute_stability_score(frame_idx, output_dirs, lpips_model):
         "stability_score": float(stability_score)
     }
 
-def compute_clip_fidelity(img_path, ref_features, clip_model, clip_processor):
 
-    if not os.path.exists(img_path):
-        return 0.0
-        
-    img = Image.open(img_path).convert('RGB')
-    inputs = clip_processor(images=img, return_tensors="pt").to(device)
+def normalize_pickscore(score, center=-2.5, scale=0.5):
+    import math
+    try:
+        return 1 / (1 + math.exp(-(score - center) / scale))
+    except OverflowError:
+        return 1.0 if score > center else 0.0
+
+
+def compute_pick_scores(image_paths, model, processor, device):
+    images = [Image.open(p).convert('RGB') for p in image_paths]
     
-    with torch.no_grad():
-        # 提取当前生成图的特征
-        gen_feat = clip_model.get_image_features(**inputs)
-        gen_feat /= gen_feat.norm(p=2, dim=-1, keepdim=True)
-        
-        # 计算与所有参考图的余弦相似度，取最大值
-        similarities = torch.matmul(gen_feat, ref_features.T) 
-        score = similarities.max().item()
-        
-    return float(score)
 
+    pos_prompt = "A high-quality architectural photo with rigid geometry, straight edges, and good structural integrity."
+    neg_prompt = "A distorted photo with warped architecture, melted furniture, structural collapse, and unrealistic twisted geometry."
+    
+    prompts = [pos_prompt, neg_prompt]
+
+    # 2. 预处理图像和文本
+    inputs = processor(
+        images=images,
+        text=prompts,
+        padding=True,
+        truncation=True,
+        max_length=77,
+        return_tensors="pt",
+    ).to(device)
+
+    with torch.no_grad():
+        image_embs = model.get_image_features(pixel_values=inputs.pixel_values)
+        image_embs = image_embs / torch.norm(image_embs, dim=-1, keepdim=True)
+    
+        text_embs = model.get_text_features(input_ids=inputs.input_ids)
+        text_embs = text_embs / torch.norm(text_embs, dim=-1, keepdim=True)
+    
+        logit_scale = model.logit_scale.exp()
+        
+        raw_scores = logit_scale * torch.matmul(text_embs, image_embs.T)
+        
+        pos_scores = raw_scores[0]
+        neg_scores = raw_scores[1]
+        
+        final_scores = pos_scores - neg_scores * 1.2
+        
+    return final_scores.cpu().tolist()
 
 class See3D(nn.Module):
     def __init__(
@@ -367,17 +399,8 @@ if __name__ == "__main__":
     warp_root_dir = args.warp_root_dir
     output_root_dir = args.output_root_dir
     output_dirs = [output_root_dir, output_root_dir + "_s1", output_root_dir + "_s2"]
-    seeds = [12345, 23456, 34567]
+    seeds = [1234, 2345, 3456]
 
-    ref_files = sorted([f for f in glob(os.path.join(source_imgs_dir, "*")) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))])
-    ref_features_list = []
-    for f in ref_files:
-        with torch.no_grad():
-            img = Image.open(f).convert('RGB')
-            it = clip_processor(images=img, return_tensors="pt").to(device)
-            feat = clip_model.get_image_features(**it)
-            ref_features_list.append(feat / feat.norm(p=2, dim=-1, keepdim=True))
-    ref_features = torch.cat(ref_features_list, dim=0)
 
     # --- 2. Multi-Seed Inference ---
     t1 = time.time()
@@ -391,6 +414,14 @@ if __name__ == "__main__":
     print("\n>>> Evaluating views with Active Vision Greedy Selection...")
     stage_dir = os.path.dirname(output_root_dir)
     matrix_path = os.path.join(stage_dir, "candidate_vis_matrix.npy")
+    diag_dir = os.path.join(stage_dir, "diagnosis_mags")
+    os.makedirs(diag_dir, exist_ok=True)
+
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 50)
+    except:
+        print("font import false, use default font")
+        font = ImageFont.load_default()
     
     candidate_pool = []
     warp_files = glob(os.path.join(output_root_dir, "predict_warp_frame*.png"))
@@ -398,15 +429,41 @@ if __name__ == "__main__":
     frame_indices = sorted({int(re.search(r'frame(\d+)', os.path.basename(f)).group(1)) for f in warp_files})
     
     for idx in frame_indices:
+        idx_str = f"{idx:06d}"
         stab_res = compute_stability_score(idx, output_dirs, loss_fn)
         if not stab_res: continue
         
         img_prefix = "SR_predict_" if args.use_SR else "predict_"
-        seed_clips = [compute_clip_fidelity(os.path.join(d, f"{img_prefix}warp_frame{idx:06d}.png"), ref_features, clip_model, clip_processor) for d in output_dirs]
+        seed_image_paths = [os.path.join(d, f"{img_prefix}warp_frame{idx_str}.png") for d in output_dirs]
+        seed_scores = compute_pick_scores(seed_image_paths, pick_model, pick_processor, device)
         
-        best_seed_idx = int(np.argmax(seed_clips))
-        quality_score = 0.5 * stab_res["stability_score"] + 0.5 * max(seed_clips)
+        best_seed_idx = int(np.argmax(seed_scores))
+        max_pick_score = seed_scores[best_seed_idx]
+        #best_seed_idx = int(np.argmax(seed_clips))
+        norm_pick_score = normalize_pickscore(max_pick_score)
+
+        ###### ab study
+        quality_score = 1.0 * stab_res["stability_score"] + 1.0 * norm_pick_score
         candidate_pool.append({"idx": idx, "quality_score": quality_score, "seed_idx": best_seed_idx})
+        ori_warp_path = os.path.join(args.warp_root_dir, f"warp_frame{idx_str}.png")
+        if os.path.exists(ori_warp_path):
+            img_ori = Image.open(ori_warp_path).convert('RGB')
+            w, h = img_ori.size
+            diag_img = Image.new('RGB', (w * 4, h + 160), (255, 255, 255))
+            diag_img.paste(img_ori, (0, 0))
+            
+            for i, d in enumerate(output_dirs):
+                s_path = os.path.join(d, f"{img_prefix}warp_frame{idx_str}.png")
+                if os.path.exists(s_path):
+                    s_img = Image.open(s_path).convert('RGB')
+                    diag_img.paste(s_img, (w * (i + 1), 0))
+
+            draw = ImageDraw.Draw(diag_img)
+            txt = f"Frame: {idx_str} | Stab: {stab_res['stability_score']:.4f} | Final Quality: {quality_score:.4f}\n"
+            txt += f"CLIP: S0={normalize_pickscore(seed_scores[0]):.2f}, S1={normalize_pickscore(seed_scores[1]):.2f}, S2={normalize_pickscore(seed_scores[2]):.2f} | Best: Seed_{best_seed_idx}"
+            draw.text((20, h + 15), txt, fill=(0, 0, 0), font=font)
+            
+            diag_img.save(os.path.join(diag_dir, f"diag_frame{idx_str}.jpg"), quality=80)
 
     vis_matrix = np.load(matrix_path) if os.path.exists(matrix_path) else None
     final_selection = []
@@ -415,8 +472,12 @@ if __name__ == "__main__":
         num_candidates, num_pts = vis_matrix.shape
         coverage_counts = np.zeros(num_pts, dtype=np.int32)
         selected_p_indices = []
+        if args.see3d_stage <= 2:
+            reference_count = num_pts * 0.1
+        else :
+            reference_count = num_pts * 0.06
 
-        for _ in range(min(12, len(candidate_pool))):
+        for _ in range(min(11, len(candidate_pool))):
             best_score = -1e9
             best_p_idx = -1
 
@@ -432,27 +493,18 @@ if __name__ == "__main__":
                     if len(selected_p_indices) > 0:
                         for prev_idx in selected_p_indices:
                             prev_vis = vis_matrix[prev_idx]
-                            inter = np.logical_and(view_vis, prev_vis).sum()
-                            union = np.logical_or(view_vis, prev_vis).sum()
+                            inter = (view_vis & prev_vis).sum()
+                            union = (view_vis | prev_vis).sum()
                             iou = inter / union if union > 0 else 0
                             max_iou_with_selected = max(max_iou_with_selected, iou)
 
-
                     spatial_penalty = 1.0
-                    if max_iou_with_selected > 0.4:
-                        spatial_penalty = 0.1 # 严重打压
+                    if max_iou_with_selected > 0.55:
+                        spatial_penalty = 0.01 
                     
-                    geom_score = (1.0 * discovery_gain) + (1.5 * reconstruction_gain)
-                    norm_geom = geom_score / 8000.0
+                    geom_score = (1.5 * discovery_gain) + (1.0 * reconstruction_gain)
+                    norm_geom = geom_score / reference_count
                     combined = (0.5 * cand['quality_score'] + 0.5 * norm_geom) * spatial_penalty
-                else:
-                    # Exploitation mode: Focus on multi-view pairs
-                    if cand['quality_score'] < 0.45:
-                        combined = -1e9
-                    else:
-                        geom_score = (0.5 * discovery_gain) + (5.0 * reconstruction_gain)
-                        norm_geom = geom_score / 2000.0
-                        combined = 0.5 * cand['quality_score'] + 0.5 * norm_geom
 
                 if combined > best_score:
                     best_score = combined
@@ -471,6 +523,14 @@ if __name__ == "__main__":
         # Fallback to quality-only
         candidate_pool.sort(key=lambda x: x['quality_score'], reverse=True)
         final_selection = sorted(candidate_pool[:10], key=lambda x: x['idx'])
+
+# --- 3.2 Mark Selected Images in Diagnosis Folder ---
+    print(">>> Marking selected views in diagnosis folder...")
+    for item in final_selection:
+        old_diag_path = os.path.join(diag_dir, f"diag_frame{item['idx']:06d}.jpg")
+        new_diag_path = os.path.join(diag_dir, f"diag_frame{item['idx']:06d}_(selected).jpg")
+        if os.path.exists(old_diag_path):
+            os.rename(old_diag_path, new_diag_path)
 
     # --- 4. Synchronization and File Ops ---
     print(f"\n>>> Synchronizing {len(final_selection)} selected views...")

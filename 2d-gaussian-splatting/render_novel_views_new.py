@@ -119,11 +119,26 @@ if __name__ == "__main__":
     gs_input_view_points = depths_to_points_parallel(gs_input_view_depths, input_viewpoints)
 
     # init visibility grid
-    bbox_min = torch.min(gaussians.get_xyz, dim=0).values
-    bbox_max = torch.max(gaussians.get_xyz, dim=0).values
-    grid_resolution = 256
+    SCAN_ID = "scan2"
+    gt_mesh_path = f"/home/xmy/priorgs-merge-total/data/test-replica/{SCAN_ID}/gt_mesh/scene_mesh.ply"
+    flag_gtmesh = 0
+    if os.path.exists(gt_mesh_path):
+        print(f">>> [Setup] Loading GT Mesh for workspace bounds: {gt_mesh_path}")
+        gt_mesh = trimesh.load(gt_mesh_path)
+        gt_mesh.remove_degenerate_faces()
+        gt_mesh.remove_duplicate_faces()
+        gt_verts = torch.from_numpy(gt_mesh.vertices).float().cuda()
+            
+        room_min = gt_verts.min(dim=0).values - 0.1
+        room_max = gt_verts.max(dim=0).values + 0.1
+        flag_gtmesh=1
+    else:
+        print(f">>> [Setup] GT Mesh NOT found at {gt_mesh_path}. Falling back to Gaussian BBox.")
+        room_min = torch.min(gaussians.get_xyz, dim=0).values
+        room_max = torch.max(gaussians.get_xyz, dim=0).values
 
-    visibility_grid = VisibilityGrid(bbox_min, bbox_max, grid_resolution, train_viewpoints, train_view_depths)
+    grid_resolution = 192
+    visibility_grid = VisibilityGrid(room_min, room_max, grid_resolution, train_viewpoints, train_view_depths)
     visibility_grid.vis_invisible_pnts(os.path.join(novel_views_save_root_path, 'invisible_points.ply'))
     #visibility_grid.vis_visible_vs_invisible(os.path.join(novel_views_save_root_path, 'invisible_points.ply'), downsample=15)
 
@@ -134,16 +149,10 @@ if __name__ == "__main__":
     used_top_k = 8
     plane_all_points_dict = get_all_global_3Dpnts(args.source_path, plane_root_path, see3d_render_path, vis_plane_pnts_path, top_k=used_top_k)
 
-    ### filter global target points within room AABB
-    if len(plane_all_points_dict) > 0:
-        all_plane_pts_np = np.concatenate(list(plane_all_points_dict.values()), axis=0)
-        all_plane_pts_torch = torch.from_numpy(all_plane_pts_np).float().cuda()
-        room_min = all_plane_pts_torch.min(dim=0).values - 0.2
-        room_max = all_plane_pts_torch.max(dim=0).values + 0.2
-        
+    if flag_gtmesh == 1:
         vg = visibility_grid
+        # --- [1. 生成 grid_centers 逻辑保持不变] ---
         nx, ny, nz = vg.resolution, vg.resolution, vg.resolution
-        
         x_indices = torch.arange(nx, device=vg.device)
         y_indices = torch.arange(ny, device=vg.device)
         z_indices = torch.arange(nz, device=vg.device)
@@ -155,18 +164,37 @@ if __name__ == "__main__":
             vg.bbox_min[2] + (Z + 0.5) * vg.grid_size[2]
         ], dim=-1)
 
-        global_target_mask = (vg.visibility_grid < 0.5) & \
-                             (grid_centers[..., 0] >= room_min[0]) & (grid_centers[..., 0] <= room_max[0]) & \
-                             (grid_centers[..., 1] >= room_min[1]) & (grid_centers[..., 1] <= room_max[1]) & \
-                             (grid_centers[..., 2] >= room_min[2]) & (grid_centers[..., 2] <= room_max[2])
+        candidate_mask = (vg.visibility_grid < 0.5)
+        candidate_pnts = grid_centers[candidate_mask]
         
-        global_target_pnts = grid_centers[global_target_mask]
-        print(f">>> [Setup] Extracted {global_target_pnts.shape[0]} valid target voxels within room bounds.")
+        # --- [2. 核心改进：使用 OBB 过滤，规避 Mesh 错误] ---
+        print(f">>> [Refine] Computing Oriented Bounding Box for GT Mesh...")
+        obb = gt_mesh.bounding_box_oriented
+        
+        points_np = candidate_pnts.detach().cpu().numpy()
+        
+        print(f">>> [Refine] Filtering {points_np.shape[0]} points with OBB (Fast Mode)...")
+        is_inside = obb.contains(points_np) 
+        
+        global_target_pnts = candidate_pnts[torch.from_numpy(is_inside).to(vg.device)]
+        print(f">>> [Setup] Extracted {global_target_pnts.shape[0]} valid target voxels via OBB.")
+        
+        # --- [3. 可视化保存] ---
+        vis_dir = os.path.join(novel_views_save_root_path, "active_vision_vis")
+        os.makedirs(vis_dir, exist_ok=True)
+        vis_path = os.path.join(vis_dir, f"target_voxels_stage{args.see3d_stage}.ply")
+        
+        points_np_final = global_target_pnts.detach().cpu().numpy()
+        colors = np.zeros_like(points_np_final)
+        colors[:, 0] = 255  # Red
+        
+        target_pc = trimesh.points.PointCloud(vertices=points_np_final, colors=colors)
+        target_pc.export(vis_path)
+        print(f">>> [Debug] Exported target voxels to: {vis_path}")
     else:
         global_target_pnts = None
-        print(">>> [Setup] Warning: No planes found, global_target_pnts is empty.")
 
-
+    ### view generation
     used_fov_deg = 80
     only_warp_input_views = False
     select_view_method = 'depth_quality'
@@ -330,59 +358,78 @@ if __name__ == "__main__":
     
     print(">>> Pre-calculating Masked Visibility Matrix for Active Vision...")
 
-    if len(plane_all_points_dict) > 0:
-        num_pnts = global_target_pnts.shape[0]
-        
-        print(f"Total target voxels to fill: {num_pnts}")
-
-        # 3. 计算可见性矩阵 (基于你筛选出的 need_inpaint_views)
+    # 检查输入数据是否存在
+    if len(plane_all_points_dict) > 0 and global_target_pnts is not None:
+        eval_pnts = global_target_pnts
+        num_pnts = eval_pnts.shape[0]
         num_candidates = len(need_inpaint_views)
-        if num_pnts > 0 and num_candidates > 0:
-            # 使用 uint8 节省存储空间
-            vis_matrix = torch.zeros((num_candidates, num_pnts), dtype=torch.uint8, device='cuda')
-            target_pnts_homo = torch.cat([global_target_pnts, torch.ones((num_pnts, 1), device='cuda')], dim=-1)
+        
+        print(f">>> [Matrix] Processing {num_candidates} views with {num_pnts} total target points (Full Resolution @160).")
 
+        if num_pnts > 0 and num_candidates > 0:
+            # 1. 准备显存空间 (uint8)
+            vis_matrix = torch.zeros((num_candidates, num_pnts), dtype=torch.uint8, device='cuda')
+            target_pnts_homo = torch.cat([eval_pnts, torch.ones((num_pnts, 1), device='cuda')], dim=-1)
+
+            # --- 自动检测相机 $Z$ 轴方向 (解决 Up=[0,0,-1] 带来的投影正负问题) ---
+            test_cam = novel_cams[need_inpaint_views[0]]
+            test_p_cam = (target_pnts_homo[:100] @ test_cam.world_view_transform)
+            z_mean = test_p_cam[:, 2].mean().item()
+            z_sign = 1.0 if z_mean > 0 else -1.0
+            print(f">>> [Check] Camera Front-Vector Detection: {'Forward +Z' if z_sign > 0 else 'Backward -Z'}. (Mean Z: {z_mean:.4f})")
+
+            # 2. 遍历视角计算可见性
             for i, ori_idx in enumerate(need_inpaint_views):
                 cam = novel_cams[ori_idx]
-                depth_map = gs_depths[ori_idx] # [H, W] Tensor
+                depth_map = gs_depths[ori_idx] # 渲染出的深度图 [H, W]
 
-                # 投影到相机坐标系
-                p_cam = (target_pnts_homo @ cam.world_view_transform) 
-                z_vals = p_cam[:, 2]
+                # A. 变换到相机空间并获取物理深度
+                p_view = (target_pnts_homo @ cam.world_view_transform) 
+                z_vals = p_view[:, 2] * z_sign
 
-                # 投影到像素坐标 (NDC)
+                # B. 投影到 NDC 空间
                 p_proj = (target_pnts_homo @ cam.full_proj_transform)
-                p_ndc = p_proj[:, :3] / p_proj[:, 3:4]
+                p_ndc = p_proj[:, :3] / (p_proj[:, 3:4] + 1e-7)
 
-                # 筛选在 FOV 内且深度为正的点
+                # C. FOV 过滤 (剔除相机背后的点及视锥外的点)
                 in_fov = (p_ndc[:, 0].abs() < 1.0) & (p_ndc[:, 1].abs() < 1.0) & (z_vals > 0.05)
                 valid_indices = torch.where(in_fov)[0]
 
                 if len(valid_indices) > 0:
+                    # D. 像素映射 (注意：1.0 - p_ndc[:, 1] 用于适配左上角原点的图像坐标系)
                     x_pix = ((p_ndc[valid_indices, 0] + 1.0) * cam.image_width / 2.0).long()
-                    y_pix = ((p_ndc[valid_indices, 1] + 1.0) * cam.image_height / 2.0).long()
+                    y_pix = ((1.0 - p_ndc[valid_indices, 1]) * cam.image_height / 2.0).long()
                     
                     x_pix = torch.clamp(x_pix, 0, cam.image_width - 1)
                     y_pix = torch.clamp(y_pix, 0, cam.image_height - 1)
 
-                    # 遮挡剔除：对比点深度与 GS 渲染深度
-                    # Replica/ScanNet++ 场景比较紧凑，0.03m 的 epsilon 较合适
+                    # E. 遮挡测试 (Occlusion Test)
+                    # 只有点的物理深度 <= 渲染表面深度 + 容差(5cm) 时才可见
                     rendered_depth = depth_map[y_pix, x_pix]
-                    visible_in_view = (z_vals[valid_indices] <= rendered_depth + 0.03)
+                    visible_in_view = (z_vals[valid_indices] <= rendered_depth + 0.05)
                     
-                    # 填充矩阵
+                    # F. 填充结果矩阵
                     vis_matrix[i, valid_indices[visible_in_view]] = 1
 
-            # 4. 导出结果，供第二个脚本使用
+            # 3. 保存结果至磁盘
+            os.makedirs(novel_views_save_root_path, exist_ok=True)
             matrix_save_path = os.path.join(novel_views_save_root_path, 'candidate_vis_matrix.npy')
             np.save(matrix_save_path, vis_matrix.cpu().numpy())
             
+            # 保存对应的点云，确保矩阵索引与 3D 坐标一一对应
+            target_pnts_save_path = os.path.join(novel_views_save_root_path, 'candidate_vis_points.ply')
+            pnts_np = eval_pnts.detach().cpu().numpy()
+            trimesh.points.PointCloud(vertices=pnts_np, colors=np.tile([255, 0, 0], (num_pnts, 1))).export(target_pnts_save_path)
             
-            print(f"✅ Matrix {vis_matrix.shape} and PLY saved to {novel_views_save_root_path}")
+            # 打印统计信息，确认矩阵有效性
+            max_hits = vis_matrix.sum(dim=1).max().item()
+            print(f">>> [Success] Matrix {vis_matrix.shape} saved to {matrix_save_path}")
+            print(f">>> [Stat] Best view can see {int(max_hits)} points. Total target points exported to PLY.")
+            
         else:
-            print("⚠️ No target points within room bounds. Matrix not saved.")
+            print("⚠️ No target points or candidate views found. Skipping matrix calculation.")
     else:
-        print("⚠️ Plane dictionary is empty. Skipping spatial filtering.")
+        print("⚠️ Missing input: plane_all_points_dict is empty or global_target_pnts is None.")
 
     # save need inpaint views cameras
     save_cameras['n_views'] = len(need_inpaint_views_cams)
