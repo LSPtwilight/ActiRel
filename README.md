@@ -1,4 +1,4 @@
-### 1. Detailed installation (if quick install fails)
+### 1. Installation for G4splat Framework
 
 <details>
 <summary><span style="font-weight: bold;">Click here to see content.</span></summary>
@@ -9,9 +9,13 @@ Please follow the instructions below to install the dependencies manually:
 
 ```shell
 conda create --name priorgs -y python=3.9
-conda activate priorgs
-# Choose the right CUDA version for your system
+conda activate actirel
+
+#### Choose the right pytorch version for your system ##############
 conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia
+pip install faiss-gpu-cu11
+###################################################################
+
 conda install -c fvcore -c iopath -c conda-forge fvcore iopath
 conda install pytorch3d==0.7.4 -c pytorch3d
 conda install -c plotly plotly
@@ -24,11 +28,7 @@ conda install cmake
 conda install conda-forge::gmp
 conda install conda-forge::cgal
 
-pip install ~/src/torch/torch-2.0.1+cu118-cp39-cp39-linux_x86_64.whl
-pip install ~/src/torchvision/torchvision-0.15.2+cu118-cp39-cp39-linux_x86_64.whl
-cp ~/src/pytorch3d/pytorch3d.zip ./ && unzip pytorch3d.zip
-cd pytorch3d && pip install -e .
-cd PromptDA && pip install -e .
+
 
 pip install roma==1.5.0
 pip install open3d==0.18.0
@@ -40,8 +40,6 @@ pip install pyglet==1.5.29
 pip install tensorboard
 pip install scikit-learn==1.6.1
 pip install cython==3.0.12
-# Choose the right CUDA version for your system
-pip install faiss-gpu-cu11
 pip install tqdm==4.67.1
 pip install matplotlib==3.9.4
 pip install huggingface-hub==0.22.2
@@ -55,10 +53,14 @@ pip install xformers==0.0.20
 pip install pytransform3d
 pip install imageio
 
+# PromDA
+git clone https://github.com/DepthAnything/PromptDA.git
+cd PromptDA && pip install -e .
+
 # sam
 pip install git+https://github.com/facebookresearch/segment-anything.git
 
-# detectron2 just for visualization
+# just for visualization, Not Necessary
 python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
 ```
 
