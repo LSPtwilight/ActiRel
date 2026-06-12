@@ -121,12 +121,27 @@ wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge
 </details>
 
 ### 2.data
-#### 2.1. Replica
+#### 2.1. Installation
 ```
+# Fast Install
+https://huggingface.co/datasets/JunfengNi/G4Splat
+
+# Official Install
 https://github.com/facebookresearch/replica-dataset
+https://github.com/scannetpp/scannetpp
+
+Then you need to change cam-pos and mesh to Z-up.
 ```
 
-#### 2.2. ScanNet++
+#### 2.2. Processing
 ```
-https://drive.google.com/drive/folders/10oT2_OQ9Sjh5wlfJQoGx2y7ZKYwpgNg5](https://github.com/scannetpp/scannetpp)
+└── G4Splat
+  └── data
+    ├── replica
+        ├── scan1 
+        ├── scan2 ...
+    ├── scannetpp
+        ├── scan1 
+        ├── scan2 ...
+
 ```
