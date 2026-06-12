@@ -119,12 +119,12 @@ wget https://download.europe.naverlabs.com/ComputerVision/MASt3R/MASt3R_ViTLarge
 </details>
 
 ### 2.data
-#### 2.1. Replica (from DP-Recon)
+#### 2.1. Replica
 ```
-https://drive.google.com/drive/folders/1VUo6egav6j4aBw_ADRFP4NEE8pgB4alq
+https://github.com/facebookresearch/replica-dataset
 ```
 
-#### 2.2. Mip-NeRF 360 (from ReconFusion)
+#### 2.2. ScanNet++
 ```
-https://drive.google.com/drive/folders/10oT2_OQ9Sjh5wlfJQoGx2y7ZKYwpgNg5
+https://drive.google.com/drive/folders/10oT2_OQ9Sjh5wlfJQoGx2y7ZKYwpgNg5](https://github.com/scannetpp/scannetpp)
 ```
