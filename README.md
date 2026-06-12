@@ -16,42 +16,21 @@ conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=
 pip install faiss-gpu-cu11
 ###################################################################
 
-conda install -c fvcore -c iopath -c conda-forge fvcore iopath
-conda install pytorch3d==0.7.4 -c pytorch3d
-conda install -c plotly plotly
-conda install -c conda-forge rich
-conda install -c conda-forge plyfile==0.8.1
-conda install -c conda-forge jupyterlab
-conda install -c conda-forge nodejs
-conda install -c conda-forge ipywidgets
-conda install cmake
-conda install conda-forge::gmp
-conda install conda-forge::cgal
+conda install -c fvcore -c iopath -c conda-forge fvcore iopath \
+    pytorch3d==0.7.4 -c pytorch3d \
+    -c plotly plotly \
+    -c conda-forge rich plyfile==0.8.1 jupyterlab nodejs ipywidgets \
+    cmake \
+    conda-forge::gmp \
+    conda-forge::cgal
 
 
-
-pip install roma==1.5.0
-pip install open3d==0.18.0
-pip install opencv-python==4.11.0.86
-pip install scipy==1.13.1
-pip install einops==0.8.1
-pip install trimesh==4.6.4
-pip install pyglet==1.5.29
-pip install tensorboard
-pip install scikit-learn==1.6.1
-pip install cython==3.0.12
-pip install tqdm==4.67.1
-pip install matplotlib==3.9.4
-pip install huggingface-hub==0.22.2
-pip install gradio
-pip install kiui
-pip install mediapy
-pip install diffusers==0.19.3
-pip install accelerate
-pip install transformers==4.28.1
-pip install xformers==0.0.20
-pip install pytransform3d
-pip install imageio
+pip install roma==1.5.0 open3d==0.18.0 opencv-python==4.11.0.86 \
+    scipy==1.13.1 einops==0.8.1 trimesh==4.6.4 pyglet==1.5.29 \
+    tensorboard scikit-learn==1.6.1 cython==3.0.12 tqdm==4.67.1 \
+    matplotlib==3.9.4 huggingface-hub==0.22.2 gradio kiui mediapy \
+    diffusers==0.19.3 accelerate transformers==4.28.1 xformers==0.0.20 \
+    pytransform3d imageio
 
 # PromDA
 git clone https://github.com/DepthAnything/PromptDA.git
@@ -145,3 +124,10 @@ Then you need to change cam-pos and mesh to Z-up.
         ├── scan2 ...
 
 ```
+
+### 3. Running
+```
+sh train.sh
+```
+If you want to change the experiment parameters, you can modify them in train.sh.
+
